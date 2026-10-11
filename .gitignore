@@ -1,0 +1,5 @@
+# Godot
+.godot/
+*.import
+# Web export output (built by CI)
+build/

@@ -7,7 +7,8 @@ const Data = preload("res://scripts/data.gd")
 const SIZE := Vector2(18, 26)
 ## Boosts that carry over from one level to the next within a run.
 const BOOST_PROPS := ["hearts", "max_hearts", "air_jumps", "max_dashes", "sword_reach", "fire_cooldown",
-	"stomp_heal", "dash_strike", "fire_count", "blast_radius", "sword_damage", "spike_boots", "magnet"]
+	"stomp_heal", "dash_strike", "fire_count", "blast_radius", "sword_damage", "spike_boots", "magnet",
+	"lucky", "jump_mult", "fall_mult", "run_mult", "crown"]
 
 var game: Node
 var level: Node
@@ -44,6 +45,13 @@ var blast_radius := Data.FIREBALL_RADIUS
 var sword_damage := 1
 var spike_boots := false
 var magnet := false
+
+# Set by the equipped trinket.
+var lucky := false
+var jump_mult := 1.0
+var fall_mult := 1.0
+var run_mult := 1.0
+var crown := false
 
 
 func center() -> Vector2:
@@ -114,11 +122,11 @@ func step(delta: float, inp: Dictionary) -> void:
 		var accel := Data.GROUND_ACCEL if grounded else Data.AIR_ACCEL
 		if wall_lock > 0.0:
 			accel *= 0.25
-		vel.x = move_toward(vel.x, x_in * Data.RUN_SPEED, accel * delta)
+		vel.x = move_toward(vel.x, x_in * Data.RUN_SPEED * run_mult, accel * delta)
 
 		var g := Data.GRAVITY
 		if vel.y > 0.0:
-			g *= Data.FALL_GRAVITY_MULT
+			g *= Data.FALL_GRAVITY_MULT * fall_mult
 		elif not inp["jump_held"]:
 			g *= Data.SHORT_HOP_GRAVITY_MULT
 		vel.y = min(vel.y + g * delta, Data.MAX_FALL)
@@ -129,7 +137,7 @@ func step(delta: float, inp: Dictionary) -> void:
 
 		if jump_buffer > 0.0:
 			if coyote > 0.0:
-				_jump(Data.JUMP_SPEED)
+				_jump(Data.JUMP_SPEED * jump_mult)
 			elif wall != 0:
 				vel = Vector2(-wall * Data.WALL_JUMP_X, -Data.WALL_JUMP_Y)
 				facing = -wall
@@ -139,7 +147,7 @@ func step(delta: float, inp: Dictionary) -> void:
 				game.spawn_dust(center() + Vector2(wall * SIZE.x / 2.0, 0), 4)
 			elif air_jumps_left > 0:
 				air_jumps_left -= 1
-				_jump(Data.JUMP_SPEED * 0.9)
+				_jump(Data.JUMP_SPEED * 0.9 * jump_mult)
 				game.spawn_dust(center() + Vector2(0, SIZE.y / 2.0), 6)
 
 	var was_grounded := grounded
@@ -235,6 +243,12 @@ func _draw() -> void:
 	var ex := origin.x + s.x / 2.0 + facing * 3.0
 	draw_rect(Rect2(ex - 4, eye_y, 3, 4), Color(0.05, 0.05, 0.1, body.a))
 	draw_rect(Rect2(ex + 2, eye_y, 3, 4), Color(0.05, 0.05, 0.1, body.a))
+	if crown:
+		var cx := origin.x + s.x / 2.0
+		var gold := Color(1.0, 0.8, 0.25, body.a)
+		for i in 3:
+			var x := cx + (i - 1) * 5.0
+			draw_colored_polygon(PackedVector2Array([Vector2(x - 3, origin.y), Vector2(x, origin.y - 7), Vector2(x + 3, origin.y)]), gold)
 	# Sword slash.
 	if attack_time > 0.0:
 		var r := sword_rect()

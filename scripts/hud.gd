@@ -81,7 +81,7 @@ func _process(_delta: float) -> void:
 
 
 func _draw() -> void:
-	if game.state == "title" or game.player == null:
+	if game.state == "village" or game.player == null:
 		return
 	var font := ThemeDB.fallback_font
 	var p = game.player

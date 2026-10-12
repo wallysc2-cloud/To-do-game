@@ -69,7 +69,7 @@ const BOONS := [
 	{"id": "dash_strike", "text": "Dashing through enemies hurts them", "unique": true},
 	{"id": "triple_fire", "text": "Fire throws three fireballs in a spread", "unique": true},
 	{"id": "big_boom", "text": "Bigger explosions", "unique": true},
-	{"id": "sharp_sword", "text": "Sword hits twice as hard", "unique": true},
+	{"id": "sharp_sword", "text": "Sword hits harder (+1 damage)", "unique": true},
 	{"id": "spike_boots", "text": "Spike-proof boots", "unique": true},
 	{"id": "gold_magnet", "text": "Gold flies to you", "unique": true},
 ]

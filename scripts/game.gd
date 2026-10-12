@@ -1,4 +1,4 @@
-## Runs the game: title screen, generating levels, the physics step, combat,
+## Runs the game: the village between runs, generating levels, the physics step, combat,
 ## boosts between levels, death and victory. Also hosts the headless self-tests.
 extends Node2D
 
@@ -12,8 +12,10 @@ const BossScript = preload("res://scripts/boss.gd")
 const ShotScript = preload("res://scripts/shot.gd")
 const FxScript = preload("res://scripts/fx.gd")
 const HudScript = preload("res://scripts/hud.gd")
+const ProfileScript = preload("res://scripts/profile.gd")
+const VillageScript = preload("res://scripts/village.gd")
 
-var state := "title"  # title, playing, boon, paused, over
+var state := "village"  # village, playing, boon, paused, over
 var rng := RandomNumberGenerator.new()
 var world: Node2D
 var camera: Camera2D
@@ -22,6 +24,8 @@ var ui: CanvasLayer
 var overlay: Control
 var pause_button: Button
 var ui_theme: Theme
+var profile: RefCounted
+var village: Control
 
 var level: Node2D
 var player: Node2D
@@ -67,9 +71,18 @@ func _ready() -> void:
 	for arg in OS.get_cmdline_user_args():
 		if arg.begins_with("--autotest="):
 			autotest = arg.get_slice("=", 1)
+	profile = ProfileScript.new()
+	if autotest == "":
+		profile.load_or_new()
+	else:
+		# Self-tests never touch the real save.
+		profile.path = "user://selftest.json"
+		profile.data = ProfileScript.fresh()
 	match autotest:
 		"levels":
 			_test_levels()
+		"village":
+			_test_village()
 		"play":
 			start_run()
 		"boss":
@@ -77,12 +90,20 @@ func _ready() -> void:
 			depth = Data.DEPTHS
 			_build_level(false)
 		_:
-			show_title()
+			show_village()
 
 
 # ---------------------------------------------------------------- run flow
 
+## The cave in the village: pay energy and go.
+func begin_run_from_village() -> void:
+	if profile.start_run(Time.get_unix_time_from_system()):
+		start_run()
+
+
 func start_run() -> void:
+	if village:
+		village.hide()
 	depth = 1
 	gold = 0
 	kills = 0
@@ -118,6 +139,8 @@ func _build_level(new_hero: bool) -> void:
 		# Carry this run's boosts and health into the next level.
 		for prop in PlayerScript.BOOST_PROPS:
 			player.set(prop, old_player.get(prop))
+	else:
+		profile.apply_to_player(player)
 	var spawn: Vector2i = info["spawn"]
 	player.position = Vector2(spawn.x * Data.TILE + (Data.TILE - player.SIZE.x) / 2.0, (spawn.y + 1) * Data.TILE - player.SIZE.y)
 	world.add_child(player)
@@ -243,8 +266,11 @@ func _collect_gold(delta: float) -> void:
 			g["pos"] = g["pos"].move_toward(c, 420.0 * delta)
 		if c.distance_to(g["pos"]) < 22.0:
 			level.gold.erase(g)
-			gold += g["value"]
-			_float_text(g["pos"], "+%d" % g["value"], Color(1, 0.85, 0.35))
+			var value: int = g["value"]
+			if player.lucky and rng.randf() < 0.25:
+				value *= 2
+			gold += value
+			_float_text(g["pos"], "+%d" % value, Color(1, 0.85, 0.35))
 			_burst(g["pos"], Color(1, 0.9, 0.4), 5)
 
 
@@ -273,13 +299,17 @@ func _end_run(won: bool) -> void:
 	if autotest in ["play", "boss"]:
 		_finish_play_test("won" if won else "died")
 		return
+	profile.end_run(gold, won)
 	get_tree().paused = true
 	var box := _new_overlay(true)
 	_label(box, "You escaped!" if won else "You fell", 56)
 	var where := "You beat the Cave King" if won else ("The Cave King got you" if depth == Data.DEPTHS else "You reached depth %d" % depth)
-	_label(box, "%s with %d gold in %d:%02d" % [where, gold, int(run_time) / 60, int(run_time) % 60], 24, Color(1, 1, 1, 0.75))
-	_button(box, "Try again", start_run)
-	_button(box, "Title screen", show_title)
+	_label(box, "%s in %d:%02d" % [where, int(run_time) / 60, int(run_time) % 60], 24, Color(1, 1, 1, 0.75))
+	_label(box, "+%d gold to keep. You now have %d." % [gold, profile.data["gold"]], 28, Color(1, 0.85, 0.35))
+	var now := Time.get_unix_time_from_system()
+	if profile.can_start_run(now):
+		_button(box, "Go again (%d energy)" % int(ProfileScript.ENERGY_PER_RUN), begin_run_from_village)
+	_button(box, "Back to the village", show_village)
 
 
 # ---------------------------------------------------------------- events from the hero and enemies
@@ -466,8 +496,8 @@ func _spawn_fx(p: Dictionary) -> void:
 
 # ---------------------------------------------------------------- menus and overlays
 
-func show_title() -> void:
-	state = "title"
+func show_village() -> void:
+	state = "village"
 	get_tree().paused = false
 	if pause_button:
 		pause_button.queue_free()
@@ -479,13 +509,38 @@ func show_title() -> void:
 	shots.clear()
 	boss = null
 	player = null
-	var box := _new_overlay(false)
-	_label(box, "To-do Game", 64)
-	_label(box, "Platformer prototype", 26, Color(1, 1, 1, 0.6))
-	_label(box, "Reach the glowing door at the bottom of 3 caves, then beat the Cave King. Stomp or slash monsters, grab gold, blast walls with Fire.", 22, Color(1, 1, 1, 0.75))
-	_label(box, "Phone: drag on the left to move. Buttons on the right.\nDown + Jump drops through wooden ledges.\nKeyboard: arrows to move, Space jump, X dash, C sword, V fire.", 20, Color(1, 1, 1, 0.55))
-	var play := _button(box, "Play", start_run)
-	play.add_theme_font_size_override("font_size", 36)
+	_clear_overlay()
+	hud.release_all()
+	if village == null:
+		village = Control.new()
+		village.set_script(VillageScript)
+		village.theme = ui_theme
+		ui.add_child(village)
+		ui.move_child(village, 0)
+		village.setup(self, profile)
+	else:
+		village.close_panel()
+	village.show()
+
+
+## A short message that floats up and fades, e.g. "+5 gold".
+func toast(text: String) -> void:
+	var l := Label.new()
+	l.text = text
+	l.add_theme_font_size_override("font_size", 30)
+	l.add_theme_color_override("font_color", Color(1, 0.9, 0.5))
+	l.add_theme_color_override("font_outline_color", Color(0, 0, 0))
+	l.add_theme_constant_override("outline_size", 6)
+	l.set_anchors_preset(Control.PRESET_CENTER_TOP)
+	l.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	l.offset_left = -300
+	l.offset_right = 300
+	l.offset_top = 110
+	ui.add_child(l)
+	var tw := l.create_tween()
+	tw.tween_property(l, "offset_top", 60.0, 1.2)
+	tw.parallel().tween_property(l, "modulate:a", 0.0, 1.2).set_delay(0.5)
+	tw.tween_callback(l.queue_free)
 
 
 func _show_boons() -> void:
@@ -529,7 +584,7 @@ func _apply_boon(id: String) -> void:
 		"big_boom":
 			player.blast_radius *= 1.4
 		"sharp_sword":
-			player.sword_damage = 2
+			player.sword_damage += 1
 		"spike_boots":
 			player.spike_boots = true
 		"gold_magnet":
@@ -564,7 +619,12 @@ func _pause() -> void:
 	var box := _new_overlay(true)
 	_label(box, "Paused", 48)
 	_button(box, "Resume", _resume)
-	_button(box, "Quit run", show_title)
+	_button(box, "Leave the cave (keep your gold)", _leave_run)
+
+
+func _leave_run() -> void:
+	profile.end_run(gold, false)
+	show_village()
 
 
 func _resume() -> void:
@@ -645,6 +705,107 @@ func _button(parent: Control, text: String, on_press: Callable) -> Button:
 
 
 # ---------------------------------------------------------------- headless self-tests
+
+## Checks the village rules (energy, tasks, chests, Epic limit, upgrades, backups)
+## and opens every village window to catch script errors.
+func _test_village() -> void:
+	var fails: Array = []
+	var check := func(ok: bool, what: String):
+		if not ok:
+			fails.append(what)
+	var p = profile
+	var r := RandomNumberGenerator.new()
+	r.seed = 7
+	var now := Time.get_unix_time_from_system()
+	p.data["energy_time"] = now
+
+	# Energy: start full, a run costs 4, time refills 1 per 15 min but only up to the cap.
+	check.call(is_equal_approx(p.energy(now), 12.0), "starts with 12 energy")
+	check.call(p.start_run(now), "can start a run")
+	check.call(is_equal_approx(p.energy(now), 8.0), "run costs 4")
+	check.call(is_equal_approx(p.energy(now + 900.0), 9.0), "15 minutes gives 1 energy")
+	check.call(is_equal_approx(p.energy(now + 900.0 * 20), 12.0), "time stops at the cap")
+	p.data["energy"] = 1.0
+	p.data["energy_time"] = now
+	check.call(not p.start_run(now), "can't start a run with 1 energy")
+
+	# Tasks: steps pay a little, finishing pays energy + chest and can go over the cap.
+	var t: Dictionary = p.add_task("Do the dishes", "hard", ["Wash", "Dry"])
+	var id := int(t["id"])
+	var g0: int = p.data["gold"]
+	check.call(p.complete_step(id) == 5 and p.complete_step(id) == 5, "steps pay 5 gold each")
+	check.call(p.complete_step(id) == 0, "no more steps")
+	check.call(p.data["gold"] == g0 + 10, "step gold banked")
+	p.data["energy"] = 11.0
+	p.data["energy_time"] = Time.get_unix_time_from_system()
+	var got: Dictionary = p.complete_task(id, r)
+	check.call(got.get("energy", 0) == 4, "hard task gives 4 energy")
+	check.call(got.get("gold", 0) >= 80, "hard chest gives at least 80 gold")
+	check.call(p.data["energy"] >= 15.0 - 0.01, "tasks can push energy over 12")
+	check.call(p.data["tasks"].is_empty(), "finished task leaves the board")
+
+	# Epic limit: 2 a day unless switched off.
+	var epics := []
+	for i in 3:
+		epics.append(int(p.add_task("Epic %d" % i, "epic", [])["id"]))
+	check.call(not p.complete_task(epics[0], r).is_empty(), "first epic ok")
+	check.call(not p.complete_task(epics[1], r).is_empty(), "second epic ok")
+	check.call(p.complete_task(epics[2], r).is_empty(), "third epic blocked by the limit")
+	p.data["epic_limit"] = false
+	check.call(not p.complete_task(epics[2], r).is_empty(), "limit can be switched off")
+
+	# Chests eventually hand out every trinket, never twice.
+	for i in 40:
+		p.complete_task(int(p.add_task("Chest %d" % i, "epic", [])["id"]), r)
+	check.call(p.data["trinkets"].size() == ProfileScript.TRINKET_ORDER.size(), "all trinkets found")
+	var unique := {}
+	for tr in p.data["trinkets"]:
+		unique[tr] = true
+	check.call(unique.size() == p.data["trinkets"].size(), "no duplicate trinkets")
+
+	# Blacksmith.
+	p.data["gold"] = 210
+	check.call(p.buy_upgrade("heart") and p.buy_upgrade("heart"), "buy two heart levels")
+	check.call(not p.buy_upgrade("heart"), "heart maxes at 2")
+	check.call(p.data["gold"] == 0, "upgrades cost 60 + 150")
+	p.equip("glass_blade")
+	var hero := Node2D.new()
+	hero.set_script(PlayerScript)
+	p.apply_to_player(hero)
+	check.call(hero.max_hearts == Data.MAX_HEARTS + 2 - 1 and hero.hearts == hero.max_hearts, "hearts from upgrades and trinket")
+	check.call(hero.sword_damage == 2, "glass blade doubles sword damage")
+	hero.free()
+
+	# Backup code round trip.
+	var code: String = p.export_code()
+	var before: int = p.data["gold"] + 123
+	p.data["gold"] = before
+	code = p.export_code()
+	p.data["gold"] = 0
+	check.call(p.import_code(code) and p.data["gold"] == before, "backup restores gold")
+	check.call(not p.import_code("not a code"), "bad backup code is rejected")
+
+	# Open every window once.
+	p.data["seen_intro"] = false
+	show_village()
+	p.add_task("Laundry", "medium", ["Wash", "Hang"])
+	for open in [village.open_intro, village.open_quest_board, village.open_blacksmith, village.open_vault]:
+		open.call()
+	village.finish_task(int(p.add_task("Email", "easy", [])["id"]))
+	p.data["energy"] = 0.0
+	village.open_gate()
+	check.call(state == "village", "gate stays shut with no energy")
+	p.data["energy"] = 12.0
+	village.open_gate()
+	check.call(state == "playing", "gate starts a run with energy")
+	check.call(player.max_hearts == Data.MAX_HEARTS + 2 - 1, "run hero gets upgrades")
+
+	for f in fails:
+		print("VILLAGETEST failed: " + f)
+	print("VILLAGETEST checks failures=%d" % fails.size())
+	DirAccess.remove_absolute(ProjectSettings.globalize_path(p.path))
+	get_tree().quit(1 if fails.size() > 0 else 0)
+
 
 ## Generates many levels and checks the exit can always be reached from the spawn.
 func _test_levels() -> void:

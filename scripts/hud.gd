@@ -91,7 +91,19 @@ func _draw() -> void:
 		var full: bool = i < p.hearts
 		_heart(c, Color(0.95, 0.3, 0.35) if full else Color(0.3, 0.3, 0.35))
 	draw_string(font, Vector2(30, 100), "Gold %d" % game.gold, HORIZONTAL_ALIGNMENT_LEFT, -1, 26, Color(1.0, 0.85, 0.35))
-	draw_string(font, Vector2(30, 134), "Depth %d / %d" % [game.depth, Data.DEPTHS], HORIZONTAL_ALIGNMENT_LEFT, -1, 22, Color(1, 1, 1, 0.7))
+	var where := "Boss lair" if game.depth == Data.DEPTHS else "Depth %d / %d" % [game.depth, Data.CAVES]
+	draw_string(font, Vector2(30, 134), where, HORIZONTAL_ALIGNMENT_LEFT, -1, 22, Color(1, 1, 1, 0.7))
+
+	# Boss health bar along the top.
+	var boss = game.boss
+	if boss and is_instance_valid(boss):
+		var view := get_viewport().get_visible_rect().size
+		var bar := Rect2(view.x / 2.0 - 260.0, 46.0, 520.0, 18.0)
+		draw_string(font, Vector2(bar.position.x, bar.position.y - 6.0), "The Cave King", HORIZONTAL_ALIGNMENT_LEFT, -1, 20, Color(1, 0.85, 0.5))
+		draw_rect(bar.grow(3.0), Color(0, 0, 0, 0.6))
+		var frac: float = clampf(float(boss.hp) / boss.max_hp, 0.0, 1.0)
+		var col := Color(0.95, 0.35, 0.3) if boss.enraged() else Color(0.85, 0.55, 0.95)
+		draw_rect(Rect2(bar.position, Vector2(bar.size.x * frac, bar.size.y)), col)
 
 	# Stick.
 	if touches.values().has("stick"):

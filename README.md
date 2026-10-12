@@ -7,8 +7,11 @@ The full design lives in the [design doc](https://claude.ai/code/artifact/b88837
 
 A 2D platformer roguelite in the spirit of Spelunky and Celeste. Hold your phone sideways.
 
-- Each run is 3 caves deep. Every cave is stitched together from random rooms, so no two runs match.
+- Each run is 3 caves deep, then the **Cave King's lair**. Every cave is stitched together from random rooms, so no two runs match.
 - Find the glowing door to go deeper. Between caves, **pick 1 of 3 boosts** that last for this run.
+- Caves have wooden ledges (jump up through them, or hold down and jump to drop), crumbling blocks, spikes and gold.
+- Monsters: slimes and brutes patrol, bats swoop, frogs hop at you, spitters lob globs.
+- The Cave King leaps and sends shockwaves along the floor, throws rocks and charges. Charging into a wall dazes it, and hits on a dazed king count double.
 - Movement is Celeste-style: coyote time, buffered jumps, wall slides, wall jumps and an 8-way dash.
 - **Stomp** monsters, slash them with the **Sword**, or throw **Fire**, which also blasts holes in the rock.
 - Grab gold on the way. Spikes and monsters cost a heart; lose all 4 and the run is over.
@@ -28,9 +31,9 @@ Room layouts are the text templates at the top of `scripts/level_gen.gd`.
 - Godot 4.4, 2D, drawn with simple shapes until we add a pixel-art pack.
 - `scripts/game.gd` runs the run, the camera, menus and input.
 - `scripts/level_gen.gd` builds a cave from room templates; `scripts/level.gd` draws it and handles tile collision.
-- `scripts/player.gd`, `enemy.gd`, `fireball.gd`, `fx.gd` and `hud.gd` are the pieces it uses.
+- `scripts/player.gd`, `enemy.gd`, `boss.gd`, `shot.gd`, `fireball.gd`, `fx.gd` and `hud.gd` are the pieces it uses.
 - Every push and pull request generates 300 caves and checks the door can be reached in each,
-  then a bot plays a run in headless Godot. The build fails on any script error.
+  then a bot plays a run and fights the boss in headless Godot. The build fails on any script error.
 - Pushes to `main` export the game for the web and publish it with GitHub Pages.
 
 ## Run it on a computer
@@ -43,4 +46,5 @@ Headless tests:
 godot --headless --import --path .
 godot --headless --path . -- --autotest=levels
 godot --headless --fixed-fps 60 --path . -- --autotest=play
+godot --headless --fixed-fps 60 --path . -- --autotest=boss
 ```

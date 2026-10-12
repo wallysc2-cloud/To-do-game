@@ -8,6 +8,8 @@ const LevelScript = preload("res://scripts/level.gd")
 const PlayerScript = preload("res://scripts/player.gd")
 const EnemyScript = preload("res://scripts/enemy.gd")
 const FireballScript = preload("res://scripts/fireball.gd")
+const BossScript = preload("res://scripts/boss.gd")
+const ShotScript = preload("res://scripts/shot.gd")
 const FxScript = preload("res://scripts/fx.gd")
 const HudScript = preload("res://scripts/hud.gd")
 
@@ -25,6 +27,9 @@ var level: Node2D
 var player: Node2D
 var enemies: Array = []
 var fireballs: Array = []
+var shots: Array = []
+var boss: Node2D
+var boons_taken: Array = []
 var depth := 1
 var gold := 0
 var kills := 0
@@ -40,7 +45,7 @@ var bot_time := 0.0
 var bot_dir := 1
 var bot_last_x := 0.0
 var bot_stuck := 0.0
-var stats := {"levels": 0, "blasted": 0, "jumps": 0}
+var stats := {"levels": 0, "blasted": 0, "jumps": 0, "hits": 0}
 
 
 func _ready() -> void:
@@ -67,6 +72,10 @@ func _ready() -> void:
 			_test_levels()
 		"play":
 			start_run()
+		"boss":
+			start_run()
+			depth = Data.DEPTHS
+			_build_level(false)
 		_:
 			show_title()
 
@@ -79,6 +88,7 @@ func start_run() -> void:
 	kills = 0
 	run_time = 0.0
 	player = null
+	boons_taken.clear()
 	_build_level(true)
 	_make_pause_button()
 
@@ -89,10 +99,13 @@ func _build_level(new_hero: bool) -> void:
 		child.queue_free()
 	enemies.clear()
 	fireballs.clear()
+	shots.clear()
+	boss = null
 
-	var info := Gen.generate(rng, depth)
+	var info := Gen.generate_boss(rng) if depth == Data.DEPTHS else Gen.generate(rng, depth)
 	level = Node2D.new()
 	level.set_script(LevelScript)
+	level.game = self
 	level.setup(info, depth)
 	world.add_child(level)
 
@@ -103,7 +116,7 @@ func _build_level(new_hero: bool) -> void:
 	player.level = level
 	if not new_hero and old_player:
 		# Carry this run's boosts and health into the next level.
-		for prop in ["hearts", "max_hearts", "air_jumps", "max_dashes", "sword_reach", "fire_cooldown", "stomp_heal", "dash_strike"]:
+		for prop in PlayerScript.BOOST_PROPS:
 			player.set(prop, old_player.get(prop))
 	var spawn: Vector2i = info["spawn"]
 	player.position = Vector2(spawn.x * Data.TILE + (Data.TILE - player.SIZE.x) / 2.0, (spawn.y + 1) * Data.TILE - player.SIZE.y)
@@ -116,6 +129,15 @@ func _build_level(new_hero: bool) -> void:
 		world.add_child(enemy)
 		enemies.append(enemy)
 
+	if info.has("boss"):
+		boss = Node2D.new()
+		boss.set_script(BossScript)
+		boss.setup(self, level, info["boss"])
+		world.add_child(boss)
+		enemies.append(boss)
+
+	# Pull the camera back a little in the boss lair so you can see its attacks coming.
+	camera.zoom = Vector2(1.6, 1.6) if boss else Vector2(2, 2)
 	camera.limit_left = 0
 	camera.limit_top = 0
 	camera.limit_right = int(level.size_px().x)
@@ -139,10 +161,11 @@ func _physics_process(delta: float) -> void:
 		if is_instance_valid(enemy):
 			enemy.step(delta)
 	_step_fireballs(delta)
+	_step_shots(delta)
 	_resolve_contacts()
-	_collect_gold()
+	_collect_gold(delta)
 	_update_camera(delta)
-	if state == "playing" and player.rect().intersects(level.exit_rect()):
+	if state == "playing" and level.exit_open and player.rect().intersects(level.exit_rect()):
 		_level_done()
 
 
@@ -178,7 +201,7 @@ func _gather_input(delta: float) -> Dictionary:
 		"spell_pressed": touch["spell"] or (keys["spell"] and not key_prev.get("spell", false)),
 	}
 	key_prev = keys
-	if autotest == "play":
+	if autotest in ["play", "boss"]:
 		inp = _bot_input(delta)
 	return inp
 
@@ -186,7 +209,7 @@ func _gather_input(delta: float) -> Dictionary:
 func _resolve_contacts() -> void:
 	# Spikes: hurt and bounce you out.
 	var feet := Rect2(player.position + Vector2(3, player.SIZE.y - 8), Vector2(player.SIZE.x - 6, 8))
-	if player.vel.y >= 0.0 and level.box_touches(feet.position, feet.size, Gen.SPIKES):
+	if not player.spike_boots and player.vel.y >= 0.0 and level.box_touches(feet.position, feet.size, Gen.SPIKES):
 		player.hurt(player.center() + Vector2(0, 30))
 		player.vel.y = -420.0
 	# Enemies: stomp them from above, otherwise they hurt you.
@@ -207,13 +230,17 @@ func _resolve_contacts() -> void:
 		elif player.is_dashing() and player.dash_strike:
 			enemy.hit(2)
 			_burst(enemy.center(), enemy.stats["color"], 6)
+		elif enemy.has_method("harmless") and enemy.harmless():
+			pass
 		else:
 			player.hurt(enemy.center())
 
 
-func _collect_gold() -> void:
+func _collect_gold(delta: float) -> void:
 	var c: Vector2 = player.center()
 	for g in level.gold.duplicate():
+		if player.magnet and c.distance_to(g["pos"]) < 160.0:
+			g["pos"] = g["pos"].move_toward(c, 420.0 * delta)
 		if c.distance_to(g["pos"]) < 22.0:
 			level.gold.erase(g)
 			gold += g["value"]
@@ -243,14 +270,14 @@ func _level_done() -> void:
 func _end_run(won: bool) -> void:
 	state = "over"
 	hud.release_all()
-	if autotest == "play":
+	if autotest in ["play", "boss"]:
 		_finish_play_test("won" if won else "died")
 		return
 	get_tree().paused = true
 	var box := _new_overlay(true)
 	_label(box, "You escaped!" if won else "You fell", 56)
-	var where := "all %d depths" % Data.DEPTHS if won else "depth %d" % depth
-	_label(box, "Made it through %s with %d gold in %d:%02d" % [where, gold, int(run_time) / 60, int(run_time) % 60], 24, Color(1, 1, 1, 0.75))
+	var where := "You beat the Cave King" if won else ("The Cave King got you" if depth == Data.DEPTHS else "You reached depth %d" % depth)
+	_label(box, "%s with %d gold in %d:%02d" % [where, gold, int(run_time) / 60, int(run_time) % 60], 24, Color(1, 1, 1, 0.75))
 	_button(box, "Try again", start_run)
 	_button(box, "Title screen", show_title)
 
@@ -265,19 +292,26 @@ func on_dash(p: Node2D) -> void:
 func on_sword(p: Node2D, r: Rect2) -> void:
 	for enemy in enemies.duplicate():
 		if is_instance_valid(enemy) and enemy.hp > 0 and r.intersects(enemy.rect()):
-			enemy.hit(1)
-			enemy.vel.x = p.facing * 160.0
+			enemy.hit(p.sword_damage)
+			if enemy != boss:
+				enemy.vel.x = p.facing * 160.0
 			_burst(enemy.center(), Color.WHITE, 4)
 			shake = max(shake, 2.5)
+	# The sword also knocks globs and rocks out of the air.
+	for s in shots.duplicate():
+		if s.kind != "wave" and r.intersects(s.rect()):
+			_pop_shot(s)
 
 
 func on_fireball(p: Node2D) -> void:
-	var fb := Node2D.new()
-	fb.set_script(FireballScript)
-	fb.position = p.center() + Vector2(p.facing * 14.0, 0)
-	fb.vel = Vector2(p.facing * Data.FIREBALL_SPEED, 0)
-	world.add_child(fb)
-	fireballs.append(fb)
+	var angles := [0.0] if p.fire_count <= 1 else [0.0, -0.28, 0.28]
+	for a in angles:
+		var fb := Node2D.new()
+		fb.set_script(FireballScript)
+		fb.position = p.center() + Vector2(p.facing * 14.0, 0)
+		fb.vel = Vector2(p.facing * Data.FIREBALL_SPEED, 0).rotated(a * p.facing)
+		world.add_child(fb)
+		fireballs.append(fb)
 
 
 func _step_fireballs(delta: float) -> void:
@@ -297,17 +331,18 @@ func _step_fireballs(delta: float) -> void:
 
 
 func _explode(at: Vector2) -> void:
-	var broken: int = level.blast(at, Data.FIREBALL_RADIUS)
+	var radius: float = player.blast_radius
+	var broken: int = level.blast(at, radius)
 	stats["blasted"] += broken
 	shake = max(shake, 8.0)
-	_spawn_fx({"kind": "ring", "pos": at, "size": Data.FIREBALL_RADIUS + 10.0, "color": Color(1.0, 0.55, 0.2), "life": 0.35})
+	_spawn_fx({"kind": "ring", "pos": at, "size": radius + 10.0, "color": Color(1.0, 0.55, 0.2), "life": 0.35})
 	_burst(at, Color(1.0, 0.6, 0.2), 10)
 	for i in broken * 2:
 		_spawn_fx({"pos": at + Vector2(rng.randf_range(-20, 20), rng.randf_range(-20, 20)),
 			"vel": Vector2(rng.randf_range(-160, 160), rng.randf_range(-320, -60)), "gravity": 900.0,
 			"life": 0.6, "color": Color(0.45, 0.35, 0.28), "size": 6.0})
 	for enemy in enemies.duplicate():
-		if is_instance_valid(enemy) and enemy.hp > 0 and enemy.center().distance_to(at) < Data.FIREBALL_RADIUS + 16.0:
+		if is_instance_valid(enemy) and enemy.hp > 0 and enemy.center().distance_to(at) < radius + enemy.size.x / 2.0 + 4.0:
 			enemy.hit(3)
 
 
@@ -315,13 +350,90 @@ func on_enemy_killed(enemy: Node2D) -> void:
 	kills += 1
 	enemies.erase(enemy)
 	_burst(enemy.center(), enemy.stats["color"], 10)
+	if enemy == boss:
+		boss = null
+		level.exit_open = true
+		shake = 16.0
+		for i in 4:
+			_burst(enemy.center() + Vector2(rng.randf_range(-30, 30), rng.randf_range(-20, 20)), Color(1, 0.8, 0.3), 12)
+		for i in 12:
+			level.add_gold(enemy.center() + Vector2(rng.randf_range(-90, 90), rng.randf_range(-40, 10)), 5)
+		for s in shots:
+			s.queue_free()
+		shots.clear()
+		_float_text(enemy.center() + Vector2(0, -50), "The Cave King falls! The door is open.", Color(1, 0.85, 0.4))
+	elif rng.randf() < 0.35:
+		level.add_gold(enemy.center(), 1)
 	enemy.queue_free()
+
+
+func spawn_shot(at: Vector2, v: Vector2, grav: float, kind: String) -> void:
+	var s := Node2D.new()
+	s.set_script(ShotScript)
+	s.kind = kind
+	s.position = at
+	s.vel = v
+	s.gravity = grav
+	if kind == "wave":
+		s.size = Vector2(18, 22)
+		s.life = 2.2
+	elif kind == "rock":
+		s.size = Vector2(14, 14)
+	world.add_child(s)
+	shots.append(s)
+
+
+func _step_shots(delta: float) -> void:
+	for s in shots.duplicate():
+		s.age += delta
+		s.vel.y += s.gravity * delta
+		s.position += s.vel * delta
+		var front: Vector2 = s.position
+		if s.kind == "wave":
+			front += Vector2(signf(s.vel.x) * s.size.x / 2.0, 0)
+		if s.age > s.life or level.solid_at(front):
+			_pop_shot(s)
+		elif s.rect().intersects(player.rect()):
+			player.hurt(s.position)
+			_pop_shot(s)
+
+
+func _pop_shot(s: Node2D) -> void:
+	_burst(s.position, Color(0.9, 0.7, 0.35), 5)
+	shots.erase(s)
+	s.queue_free()
+
+
+## The boss landed from a leap: shockwaves run along the floor both ways.
+func boss_slam(b: Node2D) -> void:
+	shake = max(shake, 10.0)
+	var speed: float = b.stats["wave_speed"] * (1.3 if b.enraged() else 1.0)
+	var floor_y: float = b.position.y + b.size.y - 11.0
+	for d in [-1.0, 1.0]:
+		spawn_shot(Vector2(b.center().x + d * (b.size.x / 2.0 + 10.0), floor_y), Vector2(d * speed, 0), 0.0, "wave")
+	spawn_dust(Vector2(b.center().x, b.position.y + b.size.y), 12)
+
+
+## The boss charged into a wall and is dazed.
+func on_boss_bonk(b: Node2D) -> void:
+	shake = max(shake, 12.0)
+	_burst(b.center() + Vector2(b.dir * b.size.x / 2.0, 0), Color(0.8, 0.75, 0.7), 10)
+	_float_text(b.center() + Vector2(0, -44), "Dazed! Hit it now", Color(1, 1, 0.6))
+
+
+func on_crumble(cell: Vector2i) -> void:
+	var at := Vector2((cell.x + 0.5) * Data.TILE, (cell.y + 0.5) * Data.TILE)
+	for i in 6:
+		_spawn_fx({"pos": at + Vector2(rng.randf_range(-12, 12), rng.randf_range(-12, 12)),
+			"vel": Vector2(rng.randf_range(-60, 60), rng.randf_range(-80, 20)), "gravity": 900.0,
+			"life": 0.6, "color": Color(0.55, 0.45, 0.38), "size": 6.0})
 
 
 func on_player_hurt() -> void:
 	shake = max(shake, 7.0)
 	_burst(player.center(), Color(1, 0.35, 0.35), 8)
-	if autotest == "play":
+	stats["hits"] += 1
+	if autotest in ["play", "boss"]:
 		player.hearts = player.max_hearts  # the test bot is immortal
 		return
 	if player.hearts <= 0:
@@ -364,21 +476,23 @@ func show_title() -> void:
 		child.queue_free()
 	enemies.clear()
 	fireballs.clear()
+	shots.clear()
+	boss = null
 	player = null
 	var box := _new_overlay(false)
 	_label(box, "To-do Game", 64)
 	_label(box, "Platformer prototype", 26, Color(1, 1, 1, 0.6))
-	_label(box, "Reach the glowing door at the bottom of each cave. Stomp or slash monsters, grab gold, blast walls with Fire.", 22, Color(1, 1, 1, 0.75))
-	_label(box, "Phone: drag on the left to move. Buttons on the right.\nKeyboard: arrows to move, Space jump, X dash, C sword, V fire.", 20, Color(1, 1, 1, 0.55))
+	_label(box, "Reach the glowing door at the bottom of 3 caves, then beat the Cave King. Stomp or slash monsters, grab gold, blast walls with Fire.", 22, Color(1, 1, 1, 0.75))
+	_label(box, "Phone: drag on the left to move. Buttons on the right.\nDown + Jump drops through wooden ledges.\nKeyboard: arrows to move, Space jump, X dash, C sword, V fire.", 20, Color(1, 1, 1, 0.55))
 	var play := _button(box, "Play", start_run)
 	play.add_theme_font_size_override("font_size", 36)
 
 
 func _show_boons() -> void:
-	var options := Data.BOONS.duplicate()
+	var options := Data.BOONS.filter(func(b): return not (b.get("unique", false) and boons_taken.has(b["id"])))
 	options.shuffle()
 	options = options.slice(0, 3)
-	if autotest == "play":
+	if autotest in ["play", "boss"]:
 		_apply_boon(options[0]["id"])
 		return
 	state = "boon"
@@ -386,12 +500,14 @@ func _show_boons() -> void:
 	get_tree().paused = true
 	var box := _new_overlay(true)
 	_label(box, "Depth %d cleared!" % (depth - 1), 44)
-	_label(box, "Pick a boost for the rest of this run", 24, Color(1, 1, 1, 0.7))
+	var sub := "The Cave King waits below. Pick a boost for the fight" if depth == Data.DEPTHS else "Pick a boost for the rest of this run"
+	_label(box, sub, 24, Color(1, 1, 1, 0.7))
 	for boon in options:
 		_button(box, boon["text"], func(): _apply_boon(boon["id"]))
 
 
 func _apply_boon(id: String) -> void:
+	boons_taken.append(id)
 	match id:
 		"double_jump":
 			player.air_jumps += 1
@@ -408,6 +524,16 @@ func _apply_boon(id: String) -> void:
 			player.stomp_heal = true
 		"dash_strike":
 			player.dash_strike = true
+		"triple_fire":
+			player.fire_count = 3
+		"big_boom":
+			player.blast_radius *= 1.4
+		"sharp_sword":
+			player.sword_damage = 2
+		"spike_boots":
+			player.spike_boots = true
+		"gold_magnet":
+			player.magnet = true
 	_build_level(false)
 
 
@@ -524,10 +650,19 @@ func _button(parent: Control, text: String, on_press: Callable) -> Button:
 func _test_levels() -> void:
 	var failures := 0
 	var total := 300
+	# Every room template must be exactly ROOM_W x ROOM_H.
+	for kind in Gen.TEMPLATES:
+		for tpl in Gen.TEMPLATES[kind]:
+			var ok: bool = tpl.size() == Gen.ROOM_H
+			for row in tpl:
+				ok = ok and row.length() == Gen.ROOM_W
+			if not ok:
+				failures += 1
+				print("LEVELTEST bad template kind=%d first_row=%s" % [kind, tpl[0]])
 	for i in total:
 		var r := RandomNumberGenerator.new()
 		r.seed = i
-		var info := Gen.generate(r, 1 + i % Data.DEPTHS)
+		var info := Gen.generate(r, 1 + i % Data.CAVES) if i % 10 != 9 else Gen.generate_boss(r)
 		if not _reachable(info):
 			failures += 1
 			print("LEVELTEST unreachable seed=%d" % i)
@@ -552,7 +687,7 @@ func _reachable(info: Dictionary) -> bool:
 			if n.x < 0 or n.y < 0 or n.x >= info["w"] or n.y >= info["h"] or seen.has(n):
 				continue
 			var t: int = grid[n.y][n.x]
-			if t == Gen.AIR or t == Gen.SPIKES:
+			if t == Gen.AIR or t == Gen.SPIKES or t == Gen.PLATFORM or t == Gen.CRUMBLE:
 				seen[n] = true
 				queue.append(n)
 	return false
@@ -569,11 +704,15 @@ func _bot_input(delta: float) -> Dictionary:
 	if bot_stuck > 1.2:
 		bot_dir = -bot_dir
 		bot_stuck = 0.0
+	if boss and is_instance_valid(boss):
+		# Stay a little way from the boss and face it, so fireballs and slashes land.
+		var dx: float = boss.center().x - player.center().x
+		bot_dir = int(signf(dx)) if absf(dx) > 90.0 else -int(signf(dx))
 	var phase := fmod(bot_time, 0.9)
 	var jump_now := phase < delta
 	if jump_now:
 		stats["jumps"] += 1
-	if bot_time > 60.0:
+	if bot_time > (90.0 if autotest == "boss" else 60.0):
 		_finish_play_test("timeout")
 	return {
 		"x": float(bot_dir), "y": -1.0 if fmod(bot_time, 4.0) < 0.5 else 0.0,
@@ -585,8 +724,9 @@ func _bot_input(delta: float) -> Dictionary:
 
 
 func _finish_play_test(result: String) -> void:
-	print("PLAYTEST result=%s depth=%d levels=%d time=%.1f kills=%d gold=%d blasted=%d jumps=%d" % [
-		result, depth, stats["levels"], run_time, kills, gold, stats["blasted"], stats["jumps"]])
+	var boss_hp: int = boss.hp if boss and is_instance_valid(boss) else 0
+	print("PLAYTEST mode=%s result=%s depth=%d levels=%d time=%.1f kills=%d gold=%d blasted=%d jumps=%d hits=%d boss_hp=%d" % [
+		autotest, result, depth, stats["levels"], run_time, kills, gold, stats["blasted"], stats["jumps"], stats["hits"], boss_hp])
 	get_tree().quit()
 	set_physics_process(false)
 	state = "over"

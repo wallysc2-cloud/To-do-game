@@ -1,11 +1,12 @@
-## The home village: the screen between runs. Tap a building to use it.
+## The home village: the screen between missions. Tap a building to use it.
 ##   Quest Board: your to-do list. Finishing tasks gives energy, gold and a chest.
-##   Blacksmith: spend gold on permanent upgrades. The forge grows as you upgrade.
-##   Vault: equip a trinket (only found in task chests), back up your save.
-##   Cave: start a run for 4 energy.
+##   Armory: buy and equip weapons, armour and charms for your three heroes.
+##   Vault: the charms you've found in task chests, your record, and save backups.
+##   Gate: set out on a mission for 4 energy.
 extends Control
 
 const Profile = preload("res://scripts/profile.gd")
+const Data = preload("res://scripts/data.gd")
 
 var game: Node
 var profile: RefCounted
@@ -87,7 +88,7 @@ func _gui_input(event: InputEvent) -> void:
 				"quests":
 					open_quest_board()
 				"smith":
-					open_blacksmith()
+					open_armory()
 				"vault":
 					open_vault()
 				"cave":
@@ -128,9 +129,9 @@ func _draw() -> void:
 		draw_rect(Rect2(note.position, Vector2(note.size.x, 6)), col)
 	_building_label(q, "Quest Board", "%d task%s" % [tasks.size(), "" if tasks.size() == 1 else "s"])
 
-	# Blacksmith: grows a bigger chimney and banners as you upgrade.
+	# Armory: grows a bigger chimney and a banner for each piece of gear bought.
 	var s: Rect2 = buildings["smith"]
-	var lvl: int = profile.total_upgrades()
+	var lvl: int = mini(profile.gear_bought(), 8)
 	var house := Rect2(s.position.x + 10, s.position.y + 80, s.size.x - 20, s.size.y - 80)
 	draw_rect(house, Color(0.45, 0.35, 0.3))
 	draw_colored_polygon(PackedVector2Array([Vector2(s.position.x, house.position.y), Vector2(s.get_center().x, s.position.y + 20), Vector2(s.end.x, house.position.y)]), Color(0.55, 0.22, 0.18))
@@ -147,9 +148,9 @@ func _draw() -> void:
 		var bx := s.position.x + 18 + i * 26
 		draw_line(Vector2(bx, house.position.y), Vector2(bx, house.position.y - 40), Color(0.3, 0.2, 0.1), 2.0)
 		draw_colored_polygon(PackedVector2Array([Vector2(bx, house.position.y - 40), Vector2(bx + 18, house.position.y - 33), Vector2(bx, house.position.y - 26)]), Color(1.0, 0.8, 0.3))
-	_building_label(s, "Blacksmith", "Level %d" % lvl)
+	_building_label(s, "Armory", "Gear for your squad")
 
-	# Vault: stone strongroom; shows how many trinkets you've found.
+	# Vault: stone strongroom; shows how many charms you've found.
 	var v: Rect2 = buildings["vault"]
 	var vb := Rect2(v.position.x, v.position.y + 50, v.size.x, v.size.y - 50)
 	draw_rect(vb, Color(0.5, 0.52, 0.58))
@@ -162,9 +163,9 @@ func _draw() -> void:
 	var found: int = profile.data["trinkets"].size()
 	for i in found:
 		draw_circle(Vector2(v.position.x + 20 + i * 36, v.position.y + 20), 9.0, Color(1.0, 0.8, 0.3, 0.7 + 0.3 * sin(t * 3.0 + i)))
-	_building_label(v, "Vault", "%d / %d trinkets" % [found, Profile.TRINKET_ORDER.size()])
+	_building_label(v, "Vault", "%d / %d charms" % [found, Data.CHARM_ORDER.size()])
 
-	# The cave: where runs start.
+	# The crypt gate: where missions start.
 	var c: Rect2 = buildings["cave"]
 	draw_circle(Vector2(c.get_center().x, c.end.y), c.size.x * 0.62, Color(0.3, 0.26, 0.24))
 	draw_circle(Vector2(c.get_center().x, c.end.y + 10), c.size.x * 0.3, Color(0.06, 0.05, 0.08))
@@ -173,8 +174,11 @@ func _draw() -> void:
 		var tp := Vector2(c.get_center().x + side * 80, c.end.y - 70)
 		draw_rect(Rect2(tp.x - 3, tp.y, 6, 30), Color(0.4, 0.28, 0.16))
 		draw_circle(tp, 9.0 * torch, Color(1.0, 0.6, 0.2, 0.9))
-	var ok: bool = profile.can_start_run(Time.get_unix_time_from_system())
-	_building_label(c, "Enter the cave", "%d energy" % int(Profile.ENERGY_PER_RUN), Color(0.6, 0.9, 1.0) if ok else Color(1, 0.5, 0.45))
+	if game.mission_active():
+		_building_label(c, "Continue mission", "Mission %d" % profile.data["mission"]["level"], Color(0.6, 0.9, 1.0))
+	else:
+		var ok: bool = profile.can_start_run(Time.get_unix_time_from_system())
+		_building_label(c, "Set out", "Mission %d   %d energy" % [profile.data["mission_level"], int(Profile.ENERGY_PER_RUN)], Color(0.6, 0.9, 1.0) if ok else Color(1, 0.5, 0.45))
 	draw_string(font, Vector2(24, size.y - 24), "Tap a building", HORIZONTAL_ALIGNMENT_LEFT, -1, 20, Color(1, 1, 1, 0.45))
 
 
@@ -188,11 +192,11 @@ func _building_label(r: Rect2, title: String, sub: String, sub_col := Color(1, 1
 
 func open_intro() -> void:
 	var box := _open_panel("Welcome to the village")
-	_label(box, "Your real to-do list powers your hero.", 24)
-	_label(box, "Add tasks at the Quest Board. Finishing one gives energy, gold and a treasure chest. Chests can hold trinkets you can't get any other way.", 20, Color(1, 1, 1, 0.8))
-	_label(box, "Each trip into the cave costs %d energy. Energy also comes back slowly by itself, 1 every 15 minutes, up to %d." % [int(Profile.ENERGY_PER_RUN), int(Profile.ENERGY_CAP)], 20, Color(1, 1, 1, 0.8))
-	_label(box, "Gold you find in the cave is yours to keep, even if you fall. Spend it at the Blacksmith.", 20, Color(1, 1, 1, 0.8))
-	_label(box, "In the cave: drag on the left half to move. On the right half, tap to jump (hold to jump higher) and swipe to dash in any direction, even in the air. Sword and Fire are the two buttons on the right. Down + Jump drops through wooden ledges. Reach the door at the bottom of 3 caves, then beat the Cave King.", 20, Color(1, 1, 1, 0.8))
+	_label(box, "Your real to-do list powers your squad.", 24)
+	_label(box, "Add tasks at the Quest Board. Finishing one gives energy, gold and a treasure chest. Chests can hold charms you can't get any other way.", 20, Color(1, 1, 1, 0.8))
+	_label(box, "Each mission costs %d energy. Energy also comes back slowly by itself, 1 every 15 minutes, up to %d." % [int(Profile.ENERGY_PER_RUN), int(Profile.ENERGY_CAP)], 20, Color(1, 1, 1, 0.8))
+	_label(box, "On a mission you pick a route of rooms to the boss. Battles are turn by turn: tap a hero, tap a blue tile to move, then attack or use an ability. Abilities cost Focus, which the squad shares. Grab the glowing crystals for more.", 20, Color(1, 1, 1, 0.8))
+	_label(box, "Gold you find is yours to keep, even if your squad falls. Spend it at the Armory.", 20, Color(1, 1, 1, 0.8))
 	_button(box, "Let's go", func():
 		profile.data["seen_intro"] = true
 		profile.save()
@@ -324,62 +328,128 @@ func finish_task(id: int) -> void:
 	_label(box, got["name"], 24)
 	_label(box, "+%d energy" % got["energy"], 30, Color(0.6, 0.9, 1.0))
 	_label(box, "The chest holds %d gold" % got["gold"], 30, Color(1, 0.85, 0.35))
-	if got["trinket"] != "":
-		var t: Dictionary = Profile.TRINKETS[got["trinket"]]
-		_label(box, "...and a trinket: %s!" % t["name"], 30, Color(0.9, 0.6, 1.0))
-		_label(box, "%s. Only tasks give these. Equip it at the Vault." % t["text"], 20, Color(1, 1, 1, 0.75))
+	if got["charm"] != "":
+		var item: Dictionary = Data.ITEMS[got["charm"]]
+		_label(box, "...and a charm: %s!" % item["name"], 30, Color(0.9, 0.6, 1.0))
+		_label(box, "%s. Only tasks give these. Put it on a hero at the Armory." % item["text"], 20, Color(1, 1, 1, 0.75))
 	_button(box, "Nice!", open_quest_board)
 
 
-func open_blacksmith() -> void:
-	var box := _open_panel("Blacksmith")
-	_label(box, "You have %d gold. Upgrades last forever." % profile.data["gold"], 22, Color(1, 0.85, 0.35))
-	for id in Profile.UPGRADE_ORDER:
-		var u: Dictionary = Profile.UPGRADES[id]
-		var lvl: int = profile.upgrade_level(id)
-		var cost: int = profile.upgrade_cost(id)
-		var row := PanelContainer.new()
-		var hb := HBoxContainer.new()
-		row.add_child(hb)
-		var l := Label.new()
-		l.text = "%s  (level %d / %d)\n%s" % [u["name"], lvl, u["cost"].size(), u["text"]]
-		l.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-		l.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-		l.add_theme_font_size_override("font_size", 20)
-		hb.add_child(l)
-		var b := _small_button(hb, "Maxed" if cost < 0 else "Upgrade: %d gold" % cost, func():
-			if profile.buy_upgrade(id):
-				game.toast("%s upgraded!" % u["name"])
-			open_blacksmith())
-		b.disabled = cost < 0 or profile.data["gold"] < cost
-		box.add_child(row)
+func open_armory() -> void:
+	var box := _open_panel("Armory")
+	_label(box, "You have %d gold. Gear you buy is yours for good. Tap a hero to kit them out." % profile.data["gold"], 22, Color(1, 0.85, 0.35))
+	for kind in Data.HERO_ORDER:
+		var hero: Dictionary = Data.HEROES[kind]
+		var st: Dictionary = profile.hero_stats(kind)
+		var gear: Dictionary = profile.data["gear"][kind]
+		var worn := []
+		for slot in ["weapon", "armour", "charm"]:
+			if gear[slot] != "":
+				worn.append(Data.ITEMS[gear[slot]]["name"])
+		var b := _button(box, "%s the %s\n%s" % [hero["name"], hero["role"], ", ".join(worn)], func(): open_hero(kind))
+		b.add_theme_font_size_override("font_size", 22)
+		b.add_theme_color_override("font_color", hero["color"])
+		b.tooltip_text = _stats_text(st)
+
+
+func open_hero(kind: String) -> void:
+	var hero: Dictionary = Data.HEROES[kind]
+	var box := _open_panel("%s the %s" % [hero["name"], hero["role"]])
+	_label(box, _stats_text(profile.hero_stats(kind)), 21, Color(1, 1, 1, 0.85))
+	_label(box, "You have %d gold." % profile.data["gold"], 20, Color(1, 0.85, 0.35))
+	var abilities := []
+	for id in hero["abilities"]:
+		abilities.append("%s: %s" % [Data.ABILITIES[id]["name"], Data.ABILITIES[id]["text"]])
+	_label(box, "\n".join(abilities), 18, Color(1, 1, 1, 0.6))
+	for slot in ["weapon", "armour", "charm"]:
+		_label(box, {"weapon": "Weapon", "armour": "Armour", "charm": "Charm (from task chests)"}[slot], 24, Color(0.75, 0.85, 1.0))
+		var any := false
+		for id in Data.ITEMS:
+			var item: Dictionary = Data.ITEMS[id]
+			if item["slot"] != slot or (item["hero"] != "" and item["hero"] != kind):
+				continue
+			if item.get("task", false) and not profile.owns(id):
+				continue
+			any = true
+			box.add_child(_item_row(kind, id))
+		if not any:
+			_label(box, "None found yet. Finish tasks to open chests.", 19, Color(1, 1, 1, 0.5))
+	_button(box, "Back to the Armory", open_armory)
+
+
+func _item_row(kind: String, id: String) -> Control:
+	var item: Dictionary = Data.ITEMS[id]
+	var row := PanelContainer.new()
+	var hb := HBoxContainer.new()
+	row.add_child(hb)
+	var l := Label.new()
+	var effect: String = item.get("text", _mods_text(item["mods"]))
+	l.text = "%s\n%s" % [item["name"], effect]
+	l.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	l.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	l.add_theme_font_size_override("font_size", 20)
+	hb.add_child(l)
+	var slot: String = item["slot"]
+	var on: bool = profile.data["gear"][kind][slot] == id
+	if on:
+		if slot == "charm":
+			_small_button(hb, "Take off", func():
+				profile.equip_item(kind, "charm", "")
+				open_hero(kind))
+		else:
+			_small_button(hb, "Equipped", func(): pass).disabled = true
+	elif profile.owns(id):
+		var who: String = profile.wearer(id) if slot == "charm" else ""
+		var label := "Equip" if who == "" else "Take from %s" % Data.HEROES[who]["name"]
+		_small_button(hb, label, func():
+			profile.equip_item(kind, slot, id)
+			open_hero(kind))
+	else:
+		var b := _small_button(hb, "Buy: %d gold" % item["cost"], func():
+			if profile.buy_item(id):
+				profile.equip_item(kind, slot, id)
+				game.toast("%s bought!" % item["name"])
+			open_hero(kind))
+		b.disabled = profile.data["gold"] < item["cost"]
+	return row
+
+
+func _stats_text(st: Dictionary) -> String:
+	var parts := ["Health %d" % st["hp"], "Move %d" % st["move"], "Armour %d" % st["armour"]]
+	for k in ["damage", "range", "spell"]:
+		if st[k] != 0:
+			parts.append("%s %+d" % [{"damage": "Damage", "range": "Range", "spell": "Spells"}[k], st[k]])
+	if st["focus"] > 0:
+		parts.append("+%d Focus a turn" % st["focus"])
+	if st["focus_start"] > 0:
+		parts.append("+%d starting Focus" % st["focus_start"])
+	if st["gold"] > 0:
+		parts.append("+%d%% gold" % st["gold"])
+	return "   ".join(parts)
+
+
+func _mods_text(mods: Dictionary) -> String:
+	if mods.is_empty():
+		return "Standard issue"
+	var names := {"damage": "damage", "hp": "health", "armour": "armour", "move": "move", "range": "range",
+		"spell": "spell power", "focus": "Focus each turn", "focus_start": "starting Focus", "gold": "% gold"}
+	var parts := []
+	for k in mods:
+		parts.append("%+d %s" % [mods[k], names.get(k, k)])
+	return ", ".join(parts)
 
 
 func open_vault() -> void:
 	var box := _open_panel("Vault")
-	_label(box, "Trinkets only come from task chests and are never lost. Wear one at a time.", 20, Color(1, 1, 1, 0.7))
-	for id in Profile.TRINKET_ORDER:
+	_label(box, "Charms only come from task chests and are never lost. Put them on heroes at the Armory.", 20, Color(1, 1, 1, 0.7))
+	for id in Data.CHARM_ORDER:
 		var owned: bool = profile.data["trinkets"].has(id)
-		var t: Dictionary = Profile.TRINKETS[id]
-		var row := PanelContainer.new()
-		var hb := HBoxContainer.new()
-		row.add_child(hb)
-		var l := Label.new()
-		l.text = ("%s\n%s" % [t["name"], t["text"]]) if owned else "???\nFind it in a task chest"
-		l.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-		l.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-		l.add_theme_font_size_override("font_size", 20)
-		if not owned:
-			l.add_theme_color_override("font_color", Color(1, 1, 1, 0.4))
-		hb.add_child(l)
-		if owned:
-			var worn: bool = profile.data["equipped"] == id
-			_small_button(hb, "Take off" if worn else "Wear", func():
-				profile.equip("" if worn else id)
-				open_vault())
-		box.add_child(row)
+		var item: Dictionary = Data.ITEMS[id]
+		var who: String = profile.wearer(id)
+		var l := _label(box, ("%s: %s%s" % [item["name"], item["text"], ("   (worn by %s)" % Data.HEROES[who]["name"]) if who != "" else ""]) if owned else "???  Find it in a task chest", 20, Color.WHITE if owned else Color(1, 1, 1, 0.4))
+		l.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
 	var st: Dictionary = profile.data["stats"]
-	_label(box, "Runs %d   Cave King beaten %d   Tasks done %d" % [st["runs"], st["wins"], st["tasks_done"]], 20, Color(1, 1, 1, 0.6))
+	_label(box, "Missions %d   Bone King beaten %d   Tasks done %d" % [st["runs"], st["wins"], st["tasks_done"]], 20, Color(1, 1, 1, 0.6))
 	_button(box, "Back up my save", func():
 		_show_text("Copy this code somewhere safe", profile.export_code()))
 	_button(box, "Restore a backup", func():
@@ -396,13 +466,13 @@ func open_vault() -> void:
 
 func open_gate() -> void:
 	var now := Time.get_unix_time_from_system()
-	if profile.can_start_run(now):
+	if game.mission_active() or profile.can_start_run(now):
 		close_panel()
 		game.begin_run_from_village()
 		return
-	var box := _open_panel("Too tired to explore")
+	var box := _open_panel("Too tired to set out")
 	var e: float = profile.energy(now)
-	_label(box, "A trip costs %d energy and you have %d." % [int(Profile.ENERGY_PER_RUN), floori(e)], 24)
+	_label(box, "A mission costs %d energy and you have %d." % [int(Profile.ENERGY_PER_RUN), floori(e)], 24)
 	var wait: float = profile.seconds_to_next_energy(now)
 	if wait >= 0.0:
 		_label(box, "+1 energy in %d:%02d." % [int(wait) / 60, int(wait) % 60], 22, Color(0.6, 0.9, 1.0))

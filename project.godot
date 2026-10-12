@@ -11,7 +11,7 @@ config_version=5
 [application]
 
 config/name="To-do Game"
-config/description="A roguelite RPG where finishing real tasks powers you up."
+config/description="A turn-based tactics game where finishing real tasks powers up your squad."
 run/main_scene="res://scenes/main.tscn"
 config/features=PackedStringArray("4.4", "GL Compatibility")
 

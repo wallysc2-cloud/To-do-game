@@ -1,71 +1,31 @@
-## Runs the game: the village between runs, generating levels, the physics step, combat,
-## boosts between levels, death and victory. Also hosts the headless self-tests.
+## Runs the whole game: the village, the mission map and battles, plus menus and self-tests.
+## A mission costs energy, goes room by room to a boss, and banks its gold when it ends.
 extends Node2D
 
 const Data = preload("res://scripts/data.gd")
-const Gen = preload("res://scripts/level_gen.gd")
-const LevelScript = preload("res://scripts/level.gd")
-const PlayerScript = preload("res://scripts/player.gd")
-const EnemyScript = preload("res://scripts/enemy.gd")
-const FireballScript = preload("res://scripts/fireball.gd")
-const BossScript = preload("res://scripts/boss.gd")
-const ShotScript = preload("res://scripts/shot.gd")
-const FxScript = preload("res://scripts/fx.gd")
-const HudScript = preload("res://scripts/hud.gd")
 const ProfileScript = preload("res://scripts/profile.gd")
 const VillageScript = preload("res://scripts/village.gd")
+const Mission = preload("res://scripts/mission.gd")
+const Combat = preload("res://scripts/combat.gd")
+const BattleScript = preload("res://scripts/battle.gd")
+const MapScript = preload("res://scripts/map.gd")
 
-var state := "village"  # village, playing, boon, paused, over
+var state := "village"  # village, map, battle
 var rng := RandomNumberGenerator.new()
-var world: Node2D
-var camera: Camera2D
-var hud: Node2D
 var ui: CanvasLayer
 var overlay: Control
-var pause_button: Button
 var ui_theme: Theme
 var profile: RefCounted
 var village: Control
-
-var level: Node2D
-var player: Node2D
-var enemies: Array = []
-var fireballs: Array = []
-var shots: Array = []
-var boss: Node2D
-var boons_taken: Array = []
-var depth := 1
-var gold := 0
-var kills := 0
-var run_time := 0.0
-var shake := 0.0
-var show_hint := true
-
-# Keyboard state for playing on a computer.
-var key_prev := {}
-
+var screen: Control      # the map or the battle on show
 var autotest := ""
-var bot_time := 0.0
-var bot_dir := 1
-var bot_last_x := 0.0
-var bot_stuck := 0.0
-var stats := {"levels": 0, "blasted": 0, "jumps": 0, "hits": 0}
+var test_log := {"battles": 0, "rooms": 0}
 
 
 func _ready() -> void:
 	rng.randomize()
-	world = Node2D.new()
-	add_child(world)
-	camera = Camera2D.new()
-	camera.zoom = Vector2(2, 2)
-	add_child(camera)
 	ui = CanvasLayer.new()
-	ui.process_mode = Node.PROCESS_MODE_ALWAYS
 	add_child(ui)
-	hud = Node2D.new()
-	hud.set_script(HudScript)
-	hud.game = self
-	ui.add_child(hud)
 	ui_theme = _make_theme()
 
 	for arg in OS.get_cmdline_user_args():
@@ -79,441 +39,181 @@ func _ready() -> void:
 		profile.path = "user://selftest.json"
 		profile.data = ProfileScript.fresh()
 	match autotest:
-		"levels":
-			_test_levels()
 		"village":
 			_test_village()
-		"controls":
-			_test_controls()
+		"battles":
+			_test_battles()
+		"missions":
+			_test_missions()
 		"play":
-			start_run()
-		"boss":
-			start_run()
-			depth = Data.DEPTHS
-			_build_level(false)
+			get_tree().create_timer(240.0).timeout.connect(func():
+				print("PLAYTEST failed: the mission took too long")
+				get_tree().quit(1))
+			begin_run_from_village()
 		_:
 			show_village()
 
 
-# ---------------------------------------------------------------- run flow
+func m() -> Dictionary:
+	return profile.data["mission"]
 
-## The cave in the village: pay energy and go.
+
+func mission_active() -> bool:
+	return not m().is_empty()
+
+
+# ---------------------------------------------------------------- mission flow
+
+## The gate in the village: pay energy and set out, or pick up a mission you left.
 func begin_run_from_village() -> void:
-	if profile.start_run(Time.get_unix_time_from_system()):
-		start_run()
+	if mission_active():
+		show_map()
+		return
+	if not profile.start_run(Time.get_unix_time_from_system()):
+		return
+	profile.data["mission"] = Mission.generate(rng, profile.data["mission_level"], profile.full_squad_hp())
+	profile.save()
+	show_map()
 
 
-func start_run() -> void:
+func _set_screen(c: Control) -> void:
+	if screen:
+		screen.queue_free()
+	screen = c
 	if village:
 		village.hide()
-	depth = 1
-	gold = 0
-	kills = 0
-	run_time = 0.0
-	player = null
-	boons_taken.clear()
-	_build_level(true)
-	_make_pause_button()
+	c.theme = ui_theme
+	ui.add_child(c)
+	ui.move_child(c, 0)
 
 
-func _build_level(new_hero: bool) -> void:
+func show_map() -> void:
+	state = "map"
 	_clear_overlay()
-	for child in world.get_children():
-		child.queue_free()
-	enemies.clear()
-	fireballs.clear()
-	shots.clear()
-	boss = null
-
-	var info := Gen.generate_boss(rng) if depth == Data.DEPTHS else Gen.generate(rng, depth)
-	level = Node2D.new()
-	level.set_script(LevelScript)
-	level.game = self
-	level.setup(info, depth)
-	world.add_child(level)
-
-	var old_player = player
-	player = Node2D.new()
-	player.set_script(PlayerScript)
-	player.game = self
-	player.level = level
-	if not new_hero and old_player:
-		# Carry this run's boosts and health into the next level.
-		for prop in PlayerScript.BOOST_PROPS:
-			player.set(prop, old_player.get(prop))
-	else:
-		profile.apply_to_player(player)
-	var spawn: Vector2i = info["spawn"]
-	player.position = Vector2(spawn.x * Data.TILE + (Data.TILE - player.SIZE.x) / 2.0, (spawn.y + 1) * Data.TILE - player.SIZE.y)
-	world.add_child(player)
-
-	for e in info["enemies"]:
-		var enemy := Node2D.new()
-		enemy.set_script(EnemyScript)
-		enemy.setup(self, level, e["kind"], e["cell"])
-		world.add_child(enemy)
-		enemies.append(enemy)
-
-	if info.has("boss"):
-		boss = Node2D.new()
-		boss.set_script(BossScript)
-		boss.setup(self, level, info["boss"])
-		world.add_child(boss)
-		enemies.append(boss)
-
-	# Pull the camera back a little in the boss lair so you can see its attacks coming.
-	camera.zoom = Vector2(1.6, 1.6) if boss else Vector2(2, 2)
-	camera.limit_left = 0
-	camera.limit_top = 0
-	camera.limit_right = int(level.size_px().x)
-	camera.limit_bottom = int(level.size_px().y)
-	camera.position = player.center()
-	camera.reset_smoothing()
-	hud.release_all()
-	state = "playing"
-	get_tree().paused = false
+	Mission.normalize(m())
+	var map := Control.new()
+	map.set_script(MapScript)
+	_set_screen(map)
+	map.setup(m(), profile)
+	map.picked.connect(enter_room)
+	map.retreat_pressed.connect(_ask_retreat)
+	if autotest == "play":
+		# The self-test bot takes a random path through the rooms.
+		var opts := Mission.choices(m())
+		var pick: Array = opts[rng.randi() % opts.size()]
+		map.tap_room.call_deferred(pick)  # first tap picks it,
+		map.tap_room.call_deferred(pick)  # second tap goes in
 
 
-func _physics_process(delta: float) -> void:
-	if state != "playing":
+func enter_room(layer: int, index: int) -> void:
+	var kind: String = Mission.room(m(), layer, index)["kind"]
+	test_log["rooms"] += 1
+	if kind in Mission.FIGHTS:
+		start_battle(layer, index, kind)
 		return
-	run_time += delta
-	if run_time > 8.0:
-		show_hint = false
-	var inp := _gather_input(delta)
-	player.step(delta, inp)
-	for enemy in enemies.duplicate():
-		if is_instance_valid(enemy):
-			enemy.step(delta)
-	_step_fireballs(delta)
-	_step_shots(delta)
-	_resolve_contacts()
-	_collect_gold(delta)
-	_update_camera(delta)
-	if state == "playing" and level.exit_open and player.rect().intersects(level.exit_rect()):
-		_level_done()
+	_arrive(layer, index)
+	var lines := []
+	match kind:
+		"treasure":
+			var g: int = 15 + 6 * m()["level"] + rng.randi_range(0, 10)
+			m()["gold"] += g
+			lines = ["The chest holds %d gold." % g]
+		"shrine":
+			for hk in Data.HERO_ORDER:
+				var top: int = profile.hero_stats(hk)["hp"]
+				var hp: int = m()["hp"][hk]
+				m()["hp"][hk] = top / 2 if hp <= 0 else hp + (top - hp + 1) / 2
+			lines = ["Your squad heals half their wounds.", "Anyone who fell gets back up."]
+		"crystal":
+			m()["crystal"] += 3
+			lines = ["You gather glowing crystals.", "Your next battle starts with +3 Focus."]
+	profile.save()
+	show_map()
+	if autotest == "":
+		_message(Data.ROOM_KINDS[kind]["name"], lines, "Onward", _clear_overlay)
 
 
-func _gather_input(delta: float) -> Dictionary:
-	var stick: Vector2 = hud.stick_vector()
-	var touch: Dictionary = hud.take_pressed()
-	var x := 0.0
-	var y := 0.0
-	if absf(stick.x) > 0.3:
-		x = signf(stick.x)
-	if absf(stick.y) > 0.55:
-		y = signf(stick.y)
-	var keys := {
-		"left": Input.is_physical_key_pressed(KEY_LEFT) or Input.is_physical_key_pressed(KEY_A),
-		"right": Input.is_physical_key_pressed(KEY_RIGHT) or Input.is_physical_key_pressed(KEY_D),
-		"up": Input.is_physical_key_pressed(KEY_UP) or Input.is_physical_key_pressed(KEY_W),
-		"down": Input.is_physical_key_pressed(KEY_DOWN) or Input.is_physical_key_pressed(KEY_S),
-		"jump": Input.is_physical_key_pressed(KEY_SPACE) or Input.is_physical_key_pressed(KEY_Z),
-		"dash": Input.is_physical_key_pressed(KEY_X) or Input.is_physical_key_pressed(KEY_SHIFT),
-		"attack": Input.is_physical_key_pressed(KEY_C) or Input.is_physical_key_pressed(KEY_J),
-		"spell": Input.is_physical_key_pressed(KEY_V) or Input.is_physical_key_pressed(KEY_K),
-	}
-	if keys["left"]: x = -1.0
-	if keys["right"]: x = 1.0
-	if keys["up"]: y = -1.0
-	if keys["down"]: y = 1.0
-	var inp := {
-		"x": x, "y": y,
-		"jump_pressed": touch["jump"] or (keys["jump"] and not key_prev.get("jump", false)),
-		"jump_held": hud.held["jump"] or keys["jump"],
-		"dash_pressed": touch["dash"] or (keys["dash"] and not key_prev.get("dash", false)),
-		"dash_dir": touch["dash_dir"],
-		"attack_pressed": touch["attack"] or (keys["attack"] and not key_prev.get("attack", false)),
-		"spell_pressed": touch["spell"] or (keys["spell"] and not key_prev.get("spell", false)),
-	}
-	key_prev = keys
-	if autotest in ["play", "boss"]:
-		inp = _bot_input(delta)
-	return inp
+func _arrive(layer: int, index: int) -> void:
+	m()["at"] = [layer, index]
+	m()["path"].append([layer, index])
 
 
-func _resolve_contacts() -> void:
-	# Spikes: hurt and bounce you out.
-	var feet := Rect2(player.position + Vector2(3, player.SIZE.y - 8), Vector2(player.SIZE.x - 6, 8))
-	if not player.spike_boots and player.vel.y >= 0.0 and level.box_touches(feet.position, feet.size, Gen.SPIKES):
-		player.hurt(player.center() + Vector2(0, 30))
-		player.vel.y = -420.0
-	# Enemies: stomp them from above, otherwise they hurt you.
-	for enemy in enemies.duplicate():
-		if not is_instance_valid(enemy) or enemy.hp <= 0:
-			continue
-		if not player.rect().intersects(enemy.rect()):
-			continue
-		var feet_y: float = player.position.y + player.SIZE.y
-		if player.vel.y > 50.0 and feet_y - enemy.position.y < 12.0:
-			enemy.hit(2)
-			player.bounce()
-			shake = max(shake, 4.0)
-			_burst(enemy.center(), enemy.stats["color"], 8)
-			if player.stomp_heal and rng.randf() < 0.25 and player.hearts < player.max_hearts:
-				player.hearts += 1
-				_float_text(player.center() + Vector2(0, -20), "+1 heart", Color(1, 0.4, 0.45))
-		elif player.is_dashing() and player.dash_strike:
-			enemy.hit(2)
-			_burst(enemy.center(), enemy.stats["color"], 6)
-		elif enemy.has_method("harmless") and enemy.harmless():
-			pass
-		else:
-			player.hurt(enemy.center())
+func start_battle(layer: int, index: int, kind: String) -> void:
+	state = "battle"
+	_clear_overlay()
+	var lists: Array = Data.ENCOUNTERS[kind]
+	var enemies: Array = lists[rng.randi() % lists.size()]
+	var heroes := []
+	for hk in Data.HERO_ORDER:
+		heroes.append({"kind": hk, "hp": m()["hp"][hk], "stats": profile.hero_stats(hk)})
+	var c := Combat.new()
+	c.setup(rng, heroes, enemies, m()["level"], profile.start_focus() + m()["crystal"])
+	var b := Control.new()
+	b.set_script(BattleScript)
+	_set_screen(b)
+	b.setup(c, Data.ROOM_KINDS[kind]["name"])
+	if autotest != "":
+		b.auto = true
+		b.speed = 40.0
+	b.finished.connect(_battle_done.bind(layer, index, kind, c))
+	b.menu_pressed.connect(_battle_menu)
 
 
-func _collect_gold(delta: float) -> void:
-	var c: Vector2 = player.center()
-	for g in level.gold.duplicate():
-		if player.magnet and c.distance_to(g["pos"]) < 160.0:
-			g["pos"] = g["pos"].move_toward(c, 420.0 * delta)
-		if c.distance_to(g["pos"]) < 22.0:
-			level.gold.erase(g)
-			var value: int = g["value"]
-			if player.lucky and rng.randf() < 0.25:
-				value *= 2
-			gold += value
-			_float_text(g["pos"], "+%d" % value, Color(1, 0.85, 0.35))
-			_burst(g["pos"], Color(1, 0.9, 0.4), 5)
-
-
-func _update_camera(delta: float) -> void:
-	var target: Vector2 = player.center() + Vector2(player.facing * 50.0, -20.0)
-	camera.position = camera.position.lerp(target, min(delta * 6.0, 1.0))
-	if shake > 0.0:
-		camera.offset = Vector2(rng.randf_range(-shake, shake), rng.randf_range(-shake, shake))
-		shake = max(shake - delta * 25.0, 0.0)
-	else:
-		camera.offset = Vector2.ZERO
-
-
-func _level_done() -> void:
-	stats["levels"] += 1
-	if depth >= Data.DEPTHS:
-		_end_run(true)
+func _battle_done(result: String, layer: int, index: int, kind: String, c: RefCounted) -> void:
+	test_log["battles"] += 1
+	for u in c.units:
+		if u["side"] == "hero":
+			m()["hp"][u["kind"]] = u["hp"]
+	m()["crystal"] = 0
+	var gold: int = c.gold_found + (15 if kind == "elite" else 0)
+	m()["gold"] += gold
+	if result != "win":
+		_end_mission(false, "Your squad has fallen")
 		return
-	depth += 1
-	_show_boons()
-
-
-func _end_run(won: bool) -> void:
-	state = "over"
-	hud.release_all()
-	if autotest in ["play", "boss"]:
-		_finish_play_test("won" if won else "died")
+	_arrive(layer, index)
+	if kind == "boss":
+		_end_mission(true, "The Bone King is beaten!")
 		return
-	profile.end_run(gold, won)
-	get_tree().paused = true
-	var box := _new_overlay(true)
-	_label(box, "You escaped!" if won else "You fell", 56)
-	var where := "You beat the Cave King" if won else ("The Cave King got you" if depth == Data.DEPTHS else "You reached depth %d" % depth)
-	_label(box, "%s in %d:%02d" % [where, int(run_time) / 60, int(run_time) % 60], 24, Color(1, 1, 1, 0.75))
-	_label(box, "+%d gold to keep. You now have %d." % [gold, profile.data["gold"]], 28, Color(1, 0.85, 0.35))
-	var now := Time.get_unix_time_from_system()
-	if profile.can_start_run(now):
-		_button(box, "Go again (%d energy)" % int(ProfileScript.ENERGY_PER_RUN), begin_run_from_village)
-	_button(box, "Back to the village", show_village)
+	profile.save()
+	show_map()
+	if autotest == "":
+		_message("Victory!", ["+%d gold" % gold], "Onward", _clear_overlay)
 
 
-# ---------------------------------------------------------------- events from the hero and enemies
-
-func on_dash(p: Node2D) -> void:
-	shake = max(shake, 2.0)
-	_burst(p.center(), Color(0.6, 0.85, 1.0), 6)
-
-
-func on_sword(p: Node2D, r: Rect2) -> void:
-	for enemy in enemies.duplicate():
-		if is_instance_valid(enemy) and enemy.hp > 0 and r.intersects(enemy.rect()):
-			enemy.hit(p.sword_damage)
-			if enemy != boss:
-				enemy.vel.x = p.facing * 160.0
-			_burst(enemy.center(), Color.WHITE, 4)
-			shake = max(shake, 2.5)
-	# The sword also knocks globs and rocks out of the air.
-	for s in shots.duplicate():
-		if s.kind != "wave" and r.intersects(s.rect()):
-			_pop_shot(s)
-
-
-func on_fireball(p: Node2D) -> void:
-	var angles := [0.0] if p.fire_count <= 1 else [0.0, -0.28, 0.28]
-	for a in angles:
-		var fb := Node2D.new()
-		fb.set_script(FireballScript)
-		fb.position = p.center() + Vector2(p.facing * 14.0, 0)
-		fb.vel = Vector2(p.facing * Data.FIREBALL_SPEED, 0).rotated(a * p.facing)
-		world.add_child(fb)
-		fireballs.append(fb)
-
-
-func _step_fireballs(delta: float) -> void:
-	for fb in fireballs.duplicate():
-		fb.age += delta
-		fb.position += fb.vel * delta
-		var boom: bool = fb.age > 2.0 or level.solid_at(fb.position)
-		if not boom:
-			for enemy in enemies:
-				if enemy.hp > 0 and enemy.rect().grow(6.0).has_point(fb.position):
-					boom = true
-					break
-		if boom:
-			_explode(fb.position)
-			fireballs.erase(fb)
-			fb.queue_free()
-
-
-func _explode(at: Vector2) -> void:
-	var radius: float = player.blast_radius
-	var broken: int = level.blast(at, radius)
-	stats["blasted"] += broken
-	shake = max(shake, 8.0)
-	_spawn_fx({"kind": "ring", "pos": at, "size": radius + 10.0, "color": Color(1.0, 0.55, 0.2), "life": 0.35})
-	_burst(at, Color(1.0, 0.6, 0.2), 10)
-	for i in broken * 2:
-		_spawn_fx({"pos": at + Vector2(rng.randf_range(-20, 20), rng.randf_range(-20, 20)),
-			"vel": Vector2(rng.randf_range(-160, 160), rng.randf_range(-320, -60)), "gravity": 900.0,
-			"life": 0.6, "color": Color(0.45, 0.35, 0.28), "size": 6.0})
-	for enemy in enemies.duplicate():
-		if is_instance_valid(enemy) and enemy.hp > 0 and enemy.center().distance_to(at) < radius + enemy.size.x / 2.0 + 4.0:
-			enemy.hit(3)
-
-
-func on_enemy_killed(enemy: Node2D) -> void:
-	kills += 1
-	enemies.erase(enemy)
-	_burst(enemy.center(), enemy.stats["color"], 10)
-	if enemy == boss:
-		boss = null
-		level.exit_open = true
-		shake = 16.0
-		for i in 4:
-			_burst(enemy.center() + Vector2(rng.randf_range(-30, 30), rng.randf_range(-20, 20)), Color(1, 0.8, 0.3), 12)
-		for i in 12:
-			level.add_gold(enemy.center() + Vector2(rng.randf_range(-90, 90), rng.randf_range(-40, 10)), 5)
-		for s in shots:
-			s.queue_free()
-		shots.clear()
-		_float_text(enemy.center() + Vector2(0, -50), "The Cave King falls! The door is open.", Color(1, 0.85, 0.4))
-	elif rng.randf() < 0.35:
-		level.add_gold(enemy.center(), 1)
-	enemy.queue_free()
-
-
-func spawn_shot(at: Vector2, v: Vector2, grav: float, kind: String) -> void:
-	var s := Node2D.new()
-	s.set_script(ShotScript)
-	s.kind = kind
-	s.position = at
-	s.vel = v
-	s.gravity = grav
-	if kind == "wave":
-		s.size = Vector2(18, 22)
-		s.life = 2.2
-	elif kind == "rock":
-		s.size = Vector2(14, 14)
-	world.add_child(s)
-	shots.append(s)
-
-
-func _step_shots(delta: float) -> void:
-	for s in shots.duplicate():
-		s.age += delta
-		s.vel.y += s.gravity * delta
-		s.position += s.vel * delta
-		var front: Vector2 = s.position
-		if s.kind == "wave":
-			front += Vector2(signf(s.vel.x) * s.size.x / 2.0, 0)
-		if s.age > s.life or level.solid_at(front):
-			_pop_shot(s)
-		elif s.rect().intersects(player.rect()):
-			player.hurt(s.position)
-			_pop_shot(s)
-
-
-func _pop_shot(s: Node2D) -> void:
-	_burst(s.position, Color(0.9, 0.7, 0.35), 5)
-	shots.erase(s)
-	s.queue_free()
-
-
-## The boss landed from a leap: shockwaves run along the floor both ways.
-func boss_slam(b: Node2D) -> void:
-	shake = max(shake, 10.0)
-	var speed: float = b.stats["wave_speed"] * (1.3 if b.enraged() else 1.0)
-	var floor_y: float = b.position.y + b.size.y - 11.0
-	for d in [-1.0, 1.0]:
-		spawn_shot(Vector2(b.center().x + d * (b.size.x / 2.0 + 10.0), floor_y), Vector2(d * speed, 0), 0.0, "wave")
-	spawn_dust(Vector2(b.center().x, b.position.y + b.size.y), 12)
-
-
-## The boss charged into a wall and is dazed.
-func on_boss_bonk(b: Node2D) -> void:
-	shake = max(shake, 12.0)
-	_burst(b.center() + Vector2(b.dir * b.size.x / 2.0, 0), Color(0.8, 0.75, 0.7), 10)
-	_float_text(b.center() + Vector2(0, -44), "Dazed! Hit it now", Color(1, 1, 0.6))
-
-
-func on_crumble(cell: Vector2i) -> void:
-	var at := Vector2((cell.x + 0.5) * Data.TILE, (cell.y + 0.5) * Data.TILE)
-	for i in 6:
-		_spawn_fx({"pos": at + Vector2(rng.randf_range(-12, 12), rng.randf_range(-12, 12)),
-			"vel": Vector2(rng.randf_range(-60, 60), rng.randf_range(-80, 20)), "gravity": 900.0,
-			"life": 0.6, "color": Color(0.55, 0.45, 0.38), "size": 6.0})
-
-
-func on_player_hurt() -> void:
-	shake = max(shake, 7.0)
-	_burst(player.center(), Color(1, 0.35, 0.35), 8)
-	stats["hits"] += 1
-	if autotest in ["play", "boss"]:
-		player.hearts = player.max_hearts  # the test bot is immortal
+func _end_mission(won: bool, headline: String) -> void:
+	var found: int = m()["gold"]
+	var banked: int = profile.end_run(found, won)
+	if autotest == "play":
+		print("PLAYTEST result=%s rooms=%d battles=%d gold=%d" % ["win" if won else "lose", test_log["rooms"], test_log["battles"], banked])
+		get_tree().quit()
 		return
-	if player.hearts <= 0:
-		_end_run(false)
+	var lines := ["%d gold goes to the village." % banked]
+	if banked > found:
+		lines.append("(Your Lucky Coin added %d.)" % (banked - found))
+	if won:
+		lines.append("Next mission is a little tougher, and pays more.")
+	show_village()
+	_message(headline, lines, "Back to the village", _clear_overlay)
 
 
-func spawn_dust(at: Vector2, count: int) -> void:
-	for i in count:
-		_spawn_fx({"pos": at, "vel": Vector2(rng.randf_range(-90, 90), rng.randf_range(-60, -10)),
-			"life": 0.3, "color": Color(0.85, 0.8, 0.75, 0.7), "size": 4.0})
+func _ask_retreat() -> void:
+	_message("Retreat?", ["Head home and keep the %d gold found so far. This mission ends." % m()["gold"]], "Retreat", func():
+		_end_mission(false, "Back home safe"), "Keep going")
 
 
-func _burst(at: Vector2, col: Color, count: int) -> void:
-	for i in count:
-		var a := rng.randf() * TAU
-		_spawn_fx({"pos": at, "vel": Vector2.RIGHT.rotated(a) * rng.randf_range(60, 200), "gravity": 400.0,
-			"life": 0.45, "color": col, "size": 4.0})
-
-
-func _float_text(at: Vector2, text: String, col: Color) -> void:
-	_spawn_fx({"kind": "text", "pos": at, "vel": Vector2(0, -40), "life": 0.8, "color": col, "text": text})
-
-
-func _spawn_fx(p: Dictionary) -> void:
-	var fx := Node2D.new()
-	fx.set_script(FxScript)
-	fx.setup(p)
-	world.add_child(fx)
+func _battle_menu() -> void:
+	_message("Paused", ["Retreat to keep the %d gold found so far. This mission ends." % m()["gold"]], "Retreat", func():
+		_end_mission(false, "Back home safe"), "Keep fighting")
 
 
 # ---------------------------------------------------------------- menus and overlays
 
 func show_village() -> void:
 	state = "village"
-	get_tree().paused = false
-	if pause_button:
-		pause_button.queue_free()
-		pause_button = null
-	for child in world.get_children():
-		child.queue_free()
-	enemies.clear()
-	fireballs.clear()
-	shots.clear()
-	boss = null
-	player = null
+	if screen:
+		screen.queue_free()
+		screen = null
 	_clear_overlay()
-	hud.release_all()
 	if village == null:
 		village = Control.new()
 		village.set_script(VillageScript)
@@ -546,94 +246,15 @@ func toast(text: String) -> void:
 	tw.tween_callback(l.queue_free)
 
 
-func _show_boons() -> void:
-	var options := Data.BOONS.filter(func(b): return not (b.get("unique", false) and boons_taken.has(b["id"])))
-	options.shuffle()
-	options = options.slice(0, 3)
-	if autotest in ["play", "boss"]:
-		_apply_boon(options[0]["id"])
-		return
-	state = "boon"
-	hud.release_all()
-	get_tree().paused = true
+## A box with a heading, a few lines and one or two buttons.
+func _message(headline: String, lines: Array, ok_text: String, on_ok: Callable, cancel_text := "") -> void:
 	var box := _new_overlay(true)
-	_label(box, "Depth %d cleared!" % (depth - 1), 44)
-	var sub := "The Cave King waits below. Pick a boost for the fight" if depth == Data.DEPTHS else "Pick a boost for the rest of this run"
-	_label(box, sub, 24, Color(1, 1, 1, 0.7))
-	for boon in options:
-		_button(box, boon["text"], func(): _apply_boon(boon["id"]))
-
-
-func _apply_boon(id: String) -> void:
-	boons_taken.append(id)
-	match id:
-		"double_jump":
-			player.air_jumps += 1
-		"extra_dash":
-			player.max_dashes += 1
-		"heart":
-			player.max_hearts += 1
-			player.hearts = min(player.hearts + 1, player.max_hearts)
-		"long_sword":
-			player.sword_reach *= 1.5
-		"fire_haste":
-			player.fire_cooldown *= 0.6
-		"stomp_heal":
-			player.stomp_heal = true
-		"dash_strike":
-			player.dash_strike = true
-		"triple_fire":
-			player.fire_count = 3
-		"big_boom":
-			player.blast_radius *= 1.4
-		"sharp_sword":
-			player.sword_damage += 1
-		"spike_boots":
-			player.spike_boots = true
-		"gold_magnet":
-			player.magnet = true
-	_build_level(false)
-
-
-func _make_pause_button() -> void:
-	if pause_button:
-		pause_button.queue_free()
-	pause_button = Button.new()
-	pause_button.text = "II"
-	pause_button.theme = ui_theme
-	pause_button.add_theme_font_size_override("font_size", 28)
-	pause_button.pressed.connect(_pause)
-	ui.add_child(pause_button)
-	# Pinned to the top-right corner, whatever the phone's width.
-	pause_button.anchor_left = 1.0
-	pause_button.anchor_right = 1.0
-	pause_button.offset_left = -100
-	pause_button.offset_right = -20
-	pause_button.offset_top = 20
-	pause_button.offset_bottom = 84
-
-
-func _pause() -> void:
-	if state != "playing":
-		return
-	state = "paused"
-	hud.release_all()
-	get_tree().paused = true
-	var box := _new_overlay(true)
-	_label(box, "Paused", 48)
-	_button(box, "Resume", _resume)
-	_button(box, "Leave the cave (keep your gold)", _leave_run)
-
-
-func _leave_run() -> void:
-	profile.end_run(gold, false)
-	show_village()
-
-
-func _resume() -> void:
-	_clear_overlay()
-	state = "playing"
-	get_tree().paused = false
+	_label(box, headline, 44)
+	for line in lines:
+		_label(box, line, 24, Color(1, 1, 1, 0.8))
+	_button(box, ok_text, on_ok)
+	if cancel_text != "":
+		_button(box, cancel_text, _clear_overlay)
 
 
 func _clear_overlay() -> void:
@@ -645,16 +266,17 @@ func _clear_overlay() -> void:
 func _new_overlay(dim: bool) -> VBoxContainer:
 	_clear_overlay()
 	overlay = Control.new()
-	overlay.set_anchors_preset(Control.PRESET_FULL_RECT)
+	overlay.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	overlay.theme = ui_theme
+	overlay.mouse_filter = Control.MOUSE_FILTER_STOP
 	ui.add_child(overlay)
 	if dim:
 		var bg := ColorRect.new()
 		bg.color = Color(0, 0, 0, 0.72)
-		bg.set_anchors_preset(Control.PRESET_FULL_RECT)
+		bg.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 		overlay.add_child(bg)
 	var box := VBoxContainer.new()
-	box.set_anchors_preset(Control.PRESET_FULL_RECT)
+	box.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	box.offset_left = 260
 	box.offset_right = -260
 	box.offset_top = 40
@@ -672,6 +294,7 @@ func _make_theme() -> Theme:
 		"hover": [Color(0.2, 0.2, 0.26), Color(0.4, 0.4, 0.5)],
 		"pressed": [Color(0.16, 0.28, 0.5), Color(0.45, 0.7, 1.0)],
 		"hover_pressed": [Color(0.18, 0.31, 0.55), Color(0.5, 0.75, 1.0)],
+		"disabled": [Color(0.12, 0.12, 0.15), Color(0.2, 0.2, 0.24)],
 		"focus": [Color(0, 0, 0, 0), Color(0, 0, 0, 0)],
 	}
 	for state_name in states:
@@ -680,9 +303,10 @@ func _make_theme() -> Theme:
 		sb.border_color = states[state_name][1]
 		sb.set_border_width_all(3)
 		sb.set_corner_radius_all(14)
-		sb.set_content_margin_all(12)
+		sb.set_content_margin_all(10)
 		t.set_stylebox(state_name, "Button", sb)
 	t.set_color("font_color", "Button", Color(0.9, 0.9, 0.95))
+	t.set_color("font_disabled_color", "Button", Color(0.5, 0.5, 0.55))
 	return t
 
 
@@ -709,7 +333,15 @@ func _button(parent: Control, text: String, on_press: Callable) -> Button:
 
 # ---------------------------------------------------------------- headless self-tests
 
-## Checks the village rules (energy, tasks, chests, Epic limit, upgrades, backups)
+func _report(tag: String, fails: Array) -> void:
+	for f in fails:
+		print("%s failed: %s" % [tag, f])
+	print("%s checks failures=%d" % [tag, fails.size()])
+	DirAccess.remove_absolute(ProjectSettings.globalize_path(profile.path))
+	get_tree().quit(1 if fails.size() > 0 else 0)
+
+
+## Checks the village rules (energy, tasks, chests, Epic limit, gear, backups)
 ## and opens every village window to catch script errors.
 func _test_village() -> void:
 	var fails: Array = []
@@ -722,15 +354,15 @@ func _test_village() -> void:
 	var now := Time.get_unix_time_from_system()
 	p.data["energy_time"] = now
 
-	# Energy: start full, a run costs 4, time refills 1 per 15 min but only up to the cap.
+	# Energy: start full, a mission costs 4, time refills 1 per 15 min but only up to the cap.
 	check.call(is_equal_approx(p.energy(now), 12.0), "starts with 12 energy")
-	check.call(p.start_run(now), "can start a run")
-	check.call(is_equal_approx(p.energy(now), 8.0), "run costs 4")
+	check.call(p.start_run(now), "can start a mission")
+	check.call(is_equal_approx(p.energy(now), 8.0), "mission costs 4")
 	check.call(is_equal_approx(p.energy(now + 900.0), 9.0), "15 minutes gives 1 energy")
 	check.call(is_equal_approx(p.energy(now + 900.0 * 20), 12.0), "time stops at the cap")
 	p.data["energy"] = 1.0
 	p.data["energy_time"] = now
-	check.call(not p.start_run(now), "can't start a run with 1 energy")
+	check.call(not p.start_run(now), "can't start a mission with 1 energy")
 
 	# Tasks: steps pay a little, finishing pays energy + chest and can go over the cap.
 	var t: Dictionary = p.add_task("Do the dishes", "hard", ["Wash", "Dry"])
@@ -757,33 +389,51 @@ func _test_village() -> void:
 	p.data["epic_limit"] = false
 	check.call(not p.complete_task(epics[2], r).is_empty(), "limit can be switched off")
 
-	# Chests eventually hand out every trinket, never twice.
+	# Chests eventually hand out every charm, never twice.
 	for i in 40:
 		p.complete_task(int(p.add_task("Chest %d" % i, "epic", [])["id"]), r)
-	check.call(p.data["trinkets"].size() == ProfileScript.TRINKET_ORDER.size(), "all trinkets found")
+	check.call(p.data["trinkets"].size() == Data.CHARM_ORDER.size(), "all charms found")
 	var unique := {}
 	for tr in p.data["trinkets"]:
 		unique[tr] = true
-	check.call(unique.size() == p.data["trinkets"].size(), "no duplicate trinkets")
+	check.call(unique.size() == p.data["trinkets"].size(), "no duplicate charms")
 
-	# Blacksmith.
-	p.data["gold"] = 210
-	check.call(p.buy_upgrade("heart") and p.buy_upgrade("heart"), "buy two heart levels")
-	check.call(not p.buy_upgrade("heart"), "heart maxes at 2")
-	check.call(p.data["gold"] == 0, "upgrades cost 60 + 150")
-	p.equip("glass_blade")
-	var hero := Node2D.new()
-	hero.set_script(PlayerScript)
-	p.apply_to_player(hero)
-	check.call(hero.max_hearts == Data.MAX_HEARTS + 2 - 1 and hero.hearts == hero.max_hearts, "hearts from upgrades and trinket")
-	check.call(hero.sword_damage == 2, "glass blade doubles sword damage")
-	hero.free()
+	# Armory: buy, equip, stats; charms move between heroes; task charms can't be bought.
+	p.data["gold"] = 200
+	check.call(p.buy_item("steel_sword"), "buy a steel sword")
+	check.call(not p.buy_item("steel_sword"), "can't buy it twice")
+	check.call(p.data["gold"] == 140, "steel sword costs 60")
+	check.call(not p.buy_item("plate"), "can't afford plate")
+	check.call(not p.buy_item("glass_blade"), "charms can't be bought")
+	check.call(not p.equip_item("ranger", "weapon", "steel_sword"), "ranger can't use a sword")
+	check.call(not p.equip_item("knight", "weapon", "war_axe"), "can't equip what you don't own")
+	check.call(p.equip_item("knight", "weapon", "steel_sword"), "knight equips the steel sword")
+	check.call(p.equip_item("knight", "charm", "glass_blade"), "knight wears the glass blade")
+	var ks: Dictionary = p.hero_stats("knight")
+	check.call(ks["damage"] == 3 and ks["hp"] == 9, "sword + glass blade: +3 damage, 9 health (got %s)" % ks)
+	check.call(p.equip_item("mage", "charm", "glass_blade") and p.wearer("glass_blade") == "mage", "charm moves to the mage")
+	check.call(p.data["gear"]["knight"]["charm"] == "", "and leaves the knight")
+	p.equip_item("ranger", "charm", "tiny_crown")
+	check.call(p.start_focus() == Data.FOCUS_START + 1, "tiny crown adds starting Focus")
+	p.equip_item("knight", "charm", "feather_cloak")
+	check.call(p.hero_stats("knight")["move"] == Data.HEROES["knight"]["move"] + 2, "feather cloak adds move")
+	p.equip_item("mage", "charm", "lucky_coin")
+	var gold_before: int = p.data["gold"]
+	check.call(p.end_run(100, true) == 125 and p.data["gold"] == gold_before + 125, "lucky coin: +25% mission gold")
+	check.call(p.data["mission_level"] == 2, "a win raises the mission level")
+
+	# Old platformer saves: upgrades are refunded, gear is filled in.
+	var old := ProfileScript.new()
+	old.path = p.path
+	old.data = ProfileScript.fresh()
+	old._merge({"gold": 10, "upgrades": {"heart": 2, "sword": 1, "fire": 0}, "trinkets": ["tiny_crown"], "equipped": "tiny_crown", "tasks": []})
+	check.call(old.data["gold"] == 10 + 60 + 150 + 40, "old upgrades refunded (got %d)" % old.data["gold"])
+	check.call(not old.data.has("upgrades") and old.data["gear"]["mage"]["weapon"] == "oak_staff", "old save gets starting gear")
 
 	# Backup code round trip.
-	var code: String = p.export_code()
 	var before: int = p.data["gold"] + 123
 	p.data["gold"] = before
-	code = p.export_code()
+	var code: String = p.export_code()
 	p.data["gold"] = 0
 	check.call(p.import_code(code) and p.data["gold"] == before, "backup restores gold")
 	check.call(not p.import_code("not a code"), "bad backup code is rejected")
@@ -792,180 +442,196 @@ func _test_village() -> void:
 	p.data["seen_intro"] = false
 	show_village()
 	p.add_task("Laundry", "medium", ["Wash", "Hang"])
-	for open in [village.open_intro, village.open_quest_board, village.open_blacksmith, village.open_vault]:
+	for open in [village.open_intro, village.open_quest_board, village.open_armory, village.open_vault]:
 		open.call()
+	for hk in Data.HERO_ORDER:
+		village.open_hero(hk)
 	village.finish_task(int(p.add_task("Email", "easy", [])["id"]))
 	p.data["energy"] = 0.0
 	village.open_gate()
 	check.call(state == "village", "gate stays shut with no energy")
 	p.data["energy"] = 12.0
 	village.open_gate()
-	check.call(state == "playing", "gate starts a run with energy")
-	check.call(player.max_hearts == Data.MAX_HEARTS + 2 - 1, "run hero gets upgrades")
+	check.call(state == "map" and mission_active(), "gate starts a mission with energy")
+	var first: Array = Mission.choices(m())[0]
+	enter_room(first[0], first[1])
+	check.call(state == "battle", "first room is a battle")
+	# Leaving and coming back keeps the mission, and costs no more energy.
+	show_village()
+	var e_before: float = p.energy(Time.get_unix_time_from_system())
+	village.open_gate()
+	check.call(state == "map" and is_equal_approx(p.energy(Time.get_unix_time_from_system()), e_before), "gate resumes a mission for free")
+	_end_mission(false, "test")
+	check.call(not mission_active(), "retreating ends the mission")
 
-	for f in fails:
-		print("VILLAGETEST failed: " + f)
-	print("VILLAGETEST checks failures=%d" % fails.size())
-	DirAccess.remove_absolute(ProjectSettings.globalize_path(p.path))
-	get_tree().quit(1 if fails.size() > 0 else 0)
+	_report("VILLAGETEST", fails)
 
 
-## Feeds fake touches to the on-screen controls: tap = jump, hold = high jump,
-## swipe = dash in the swipe's direction (snapped to 8), and checks the hero responds.
-func _test_controls() -> void:
+## Plays thousands of battles with a simple bot and checks the rules hold up:
+## battles end, nobody gets stuck, and the win rate is sensible.
+func _test_battles() -> void:
 	var fails: Array = []
 	var check := func(ok: bool, what: String):
 		if not ok:
 			fails.append(what)
-	start_run()
-	var view := get_viewport().get_visible_rect().size
-	var right := Vector2(view.x * 0.75, view.y * 0.6)
-	var touch := func(i: int, at: Vector2, down: bool):
-		var e := InputEventScreenTouch.new()
-		e.index = i
-		e.position = at
-		e.pressed = down
-		hud._input(e)
-	var drag := func(i: int, at: Vector2):
-		var e := InputEventScreenDrag.new()
-		e.index = i
-		e.position = at
-		hud._input(e)
+	var r := RandomNumberGenerator.new()
+	r.seed = 11
 
-	# Quick tap: a short hop on release.
-	touch.call(1, right, true)
-	touch.call(1, right, false)
-	var got: Dictionary = hud.take_pressed()
-	check.call(got["jump"] and not got["dash"] and not hud.held["jump"], "quick tap jumps (short hop)")
+	# Rules.
+	var c := _test_combat(r, ["skeleton"], 1)
+	check.call(c.alive("hero").size() == 3 and c.alive("enemy").size() == 1, "3 heroes vs 1 skeleton")
+	var knight: Dictionary = c.alive("hero").filter(func(u): return u["kind"] == "knight")[0]
+	var sk: Dictionary = c.alive("enemy")[0]
+	var f0: int = c.focus
+	var reach: Dictionary = c.reachable(knight, c.hero_move(knight) + Data.SPRINT_MOVE)
+	var far: Vector2i = knight["cell"]
+	for cc in reach:
+		if reach[cc] > reach.get(far, 0):
+			far = cc
+	check.call(c.move_hero(knight, far, true) and c.focus <= f0 - 1 + Data.CRYSTAL_FOCUS * 2, "sprint moves further for 1 Focus")
+	check.call(not c.move_hero(knight, knight["cell"] + Vector2i(1, 0)), "can't move twice")
+	# Put the skeleton next to the knight and shield-bash it into a wall.
+	_place(c, sk, knight["cell"] + Vector2i(1, 0))
+	c.focus = 5
+	var hp0: int = sk["hp"]
+	check.call(c.use_ability(knight, "bash", sk["cell"]), "shield bash works")
+	check.call(sk["hp"] < hp0, "bash hurts")
+	check.call(not c.use_ability(knight, "slash", sk["cell"]), "can't act twice")
+	# Armour: a hit always does at least 1.
+	sk["hp"] = 5
+	sk["armour"] = 10
+	c._hurt(sk, 2)
+	check.call(sk["hp"] == 4, "armour never blocks the last point")
+	# Fireball hits friends too.
+	c = _test_combat(r, ["skeleton", "skeleton"], 1)
+	var mage: Dictionary = c.alive("hero").filter(func(u): return u["kind"] == "mage")[0]
+	var ranger: Dictionary = c.alive("hero").filter(func(u): return u["kind"] == "ranger")[0]
+	var spot := Vector2i(4, 2)
+	_place(c, mage, Vector2i(2, 2))
+	_place(c, ranger, spot + Vector2i(0, 1))
+	_place(c, c.alive("enemy")[0], spot)
+	c.grid[2][3] = Combat.FLOOR
+	c.focus = 5
+	var rhp: int = ranger["hp"]
+	check.call(c.use_ability(mage, "fireball", spot), "fireball can be cast")
+	check.call(ranger["hp"] < rhp, "fireball burns a hero standing next to the target")
+	# Pinning shot roots.
+	c = _test_combat(r, ["brute"], 1)
+	ranger = c.alive("hero").filter(func(u): return u["kind"] == "ranger")[0]
+	var brute: Dictionary = c.alive("enemy")[0]
+	_place(c, ranger, Vector2i(0, 0))
+	_place(c, brute, Vector2i(3, 0))
+	for x in range(0, 4):
+		c.grid[0][x] = Combat.FLOOR
+	c.focus = 5
+	check.call(c.use_ability(ranger, "pin", brute["cell"]) and brute["rooted"] == 1, "pinning shot roots")
+	var bcell: Vector2i = brute["cell"]
+	c.end_player_turn()
+	c.enemy_act(brute)
+	check.call(brute["cell"] == bcell, "a pinned monster doesn't move")
 
-	# Hold: becomes a held jump once the tap delay passes.
-	touch.call(2, right, true)
-	hud.touches[2]["start"] -= 1.0  # pretend the finger has been down a while
-	got = hud.take_pressed()
-	check.call(got["jump"] and hud.held["jump"], "holding jumps and stays held")
-	touch.call(2, right, false)
-	check.call(not hud.held["jump"], "letting go ends the held jump")
-
-	# Swipes dash, snapped to 8 directions, without jumping.
-	var swipes := {
-		Vector2(40, 0): Vector2.RIGHT, Vector2(-40, 5): Vector2.LEFT, Vector2(3, -40): Vector2.UP,
-		Vector2(-30, -30): Vector2(-1, -1).normalized(), Vector2(30, 28): Vector2(1, 1).normalized(),
-	}
-	for move in swipes:
-		touch.call(3, right, true)
-		drag.call(3, right + move)
-		got = hud.take_pressed()
-		check.call(got["dash"] and not got["jump"], "swipe %s dashes without jumping" % move)
-		check.call(got["dash_dir"].is_equal_approx(swipes[move]), "swipe %s goes %s (got %s)" % [move, swipes[move], got["dash_dir"]])
-		touch.call(3, right + move, false)
-		check.call(not hud.take_pressed()["jump"], "lifting after a swipe doesn't jump")
-
-	# Jump then swipe while still holding: jump, then an air dash.
-	touch.call(4, right, true)
-	hud.touches[4]["start"] -= 1.0
-	check.call(hud.take_pressed()["jump"], "hold jumps first")
-	drag.call(4, right + Vector2(40, 0))
-	got = hud.take_pressed()
-	check.call(got["dash"] and not hud.held["jump"], "swipe during a held jump dashes")
-	touch.call(4, right + Vector2(40, 0), false)
-
-	# The hero really dashes up when told to.
-	player.vel = Vector2.ZERO
-	for i in 30:
-		player.step(1.0 / 60.0, {"x": 0.0, "y": 0.0, "jump_pressed": false, "jump_held": false, "dash_pressed": false, "attack_pressed": false, "spell_pressed": false})
-	var y0: float = player.position.y
-	player.step(1.0 / 60.0, {"x": 0.0, "y": 0.0, "jump_pressed": false, "jump_held": false, "dash_pressed": true, "dash_dir": Vector2.UP, "attack_pressed": false, "spell_pressed": false})
-	for i in 8:
-		player.step(1.0 / 60.0, {"x": 0.0, "y": 0.0, "jump_pressed": false, "jump_held": false, "dash_pressed": false, "attack_pressed": false, "spell_pressed": false})
-	check.call(y0 - player.position.y > 40.0, "up-dash lifts the hero (moved %.0f px)" % (y0 - player.position.y))
-
-	for f in fails:
-		print("CONTROLTEST failed: " + f)
-	print("CONTROLTEST checks failures=%d" % fails.size())
-	get_tree().quit(1 if fails.size() > 0 else 0)
-
-
-## Generates many levels and checks the exit can always be reached from the spawn.
-func _test_levels() -> void:
-	var failures := 0
-	var total := 300
-	# Every room template must be exactly ROOM_W x ROOM_H.
-	for kind in Gen.TEMPLATES:
-		for tpl in Gen.TEMPLATES[kind]:
-			var ok: bool = tpl.size() == Gen.ROOM_H
-			for row in tpl:
-				ok = ok and row.length() == Gen.ROOM_W
-			if not ok:
-				failures += 1
-				print("LEVELTEST bad template kind=%d first_row=%s" % [kind, tpl[0]])
-	for i in total:
-		var r := RandomNumberGenerator.new()
-		r.seed = i
-		var info := Gen.generate(r, 1 + i % Data.CAVES) if i % 10 != 9 else Gen.generate_boss(r)
-		if not _reachable(info):
-			failures += 1
-			print("LEVELTEST unreachable seed=%d" % i)
-	print("LEVELTEST levels=%d failures=%d" % [total, failures])
-	get_tree().quit(1 if failures > 0 else 0)
+	# Many battles with the bot.
+	var lines := []
+	for kind in ["battle", "elite", "boss"]:
+		var wins := 0
+		var turns := 0
+		var stuck := 0
+		var games := 300
+		for i in games:
+			var lists: Array = Data.ENCOUNTERS[kind]
+			var b := _test_combat(r, lists[r.randi() % lists.size()], 1)
+			var res := _autoplay(b)
+			if res == "stuck":
+				stuck += 1
+			if res == "win":
+				wins += 1
+			turns += b.turn
+		# The bot is simple and can get its own heroes in each other's way now and then;
+		# more than that means something in the rules is wrong.
+		check.call(stuck <= games / 100, "%d %s battles never ended" % [stuck, kind])
+		lines.append("%s %d%% won, %.1f turns, %d stuck" % [kind, 100 * wins / games, float(turns) / games, stuck])
+	print("BATTLETEST bot results: " + ", ".join(lines))
+	_report("BATTLETEST", fails)
 
 
-func _reachable(info: Dictionary) -> bool:
-	var grid: Array = info["grid"]
-	var start: Vector2i = info["spawn"]
-	var goal: Vector2i = info["exit"]
-	if grid[start.y][start.x] != Gen.AIR or grid[goal.y][goal.x] != Gen.AIR:
-		return false
-	var seen := {start: true}
-	var queue: Array = [start]
-	while not queue.is_empty():
-		var c: Vector2i = queue.pop_front()
-		if c == goal:
+func _test_combat(r: RandomNumberGenerator, enemies: Array, level: int) -> RefCounted:
+	var heroes := []
+	for hk in Data.HERO_ORDER:
+		heroes.append({"kind": hk, "hp": 99, "stats": profile.hero_stats(hk)})
+	var c := Combat.new()
+	c.setup(r, heroes, enemies, level, Data.FOCUS_START)
+	return c
+
+
+func _place(c: RefCounted, u: Dictionary, cell: Vector2i) -> void:
+	var other: Dictionary = c.unit_at(cell)
+	if not other.is_empty() and other["id"] != u["id"]:
+		other["cell"] = u["cell"]
+	c.grid[cell.y][cell.x] = Combat.FLOOR
+	u["cell"] = cell
+
+
+## Plays a battle to the end with the bot. Returns win, lose or stuck.
+func _autoplay(c: RefCounted) -> String:
+	while c.result() == "" and c.turn < 60:
+		c.auto_hero_turn()
+		for e in c.alive("enemy"):
+			c.enemy_act(e)
+		c.start_player_turn()
+		c.events.clear()
+	return c.result() if c.result() != "" else "stuck"
+
+
+## Generates many missions and checks every route works; then the bot plays some
+## whole missions (with wounds carrying over) to see how often a fresh squad wins.
+func _test_missions() -> void:
+	var fails: Array = []
+	var r := RandomNumberGenerator.new()
+	r.seed = 5
+	for i in 500:
+		var mm := Mission.generate(r, 1, profile.full_squad_hp())
+		var err := Mission.check(mm)
+		if err != "":
+			fails.append("mission %d: %s" % [i, err])
+		var saved = JSON.parse_string(JSON.stringify(mm))
+		if Mission.check(Mission.normalize(saved)) != "" or Mission.choices(saved).size() != 2:
+			fails.append("mission %d doesn't survive saving" % i)
+	var wins := 0
+	var games := 100
+	for i in games:
+		var mm := Mission.generate(r, 1, profile.full_squad_hp())
+		if _automission(r, mm):
+			wins += 1
+	print("MISSIONTEST bot won %d of %d fresh-squad missions" % [wins, games])
+	_report("MISSIONTEST", fails)
+
+
+func _automission(r: RandomNumberGenerator, mm: Dictionary) -> bool:
+	while true:
+		var opts := Mission.choices(mm)
+		if opts.is_empty():
 			return true
-		for d in [Vector2i.LEFT, Vector2i.RIGHT, Vector2i.UP, Vector2i.DOWN]:
-			var n: Vector2i = c + d
-			if n.x < 0 or n.y < 0 or n.x >= info["w"] or n.y >= info["h"] or seen.has(n):
-				continue
-			var t: int = grid[n.y][n.x]
-			if t == Gen.AIR or t == Gen.SPIKES or t == Gen.PLATFORM or t == Gen.CRUMBLE:
-				seen[n] = true
-				queue.append(n)
+		var c: Array = opts[r.randi() % opts.size()]
+		var kind: String = Mission.room(mm, c[0], c[1])["kind"]
+		mm["at"] = c
+		match kind:
+			"shrine":
+				for hk in Data.HERO_ORDER:
+					var top: int = profile.hero_stats(hk)["hp"]
+					mm["hp"][hk] = top / 2 if mm["hp"][hk] <= 0 else mm["hp"][hk] + (top - mm["hp"][hk] + 1) / 2
+			"crystal":
+				mm["crystal"] += 3
+			"battle", "elite", "boss":
+				var heroes := []
+				for hk in Data.HERO_ORDER:
+					heroes.append({"kind": hk, "hp": mm["hp"][hk], "stats": profile.hero_stats(hk)})
+				var b := Combat.new()
+				var lists: Array = Data.ENCOUNTERS[kind]
+				b.setup(r, heroes, lists[r.randi() % lists.size()], 1, Data.FOCUS_START + mm["crystal"])
+				mm["crystal"] = 0
+				if _autoplay(b) != "win":
+					return false
+				for u in b.units:
+					if u["side"] == "hero":
+						mm["hp"][u["kind"]] = u["hp"]
 	return false
-
-
-## A simple immortal bot runs, jumps, dashes and fights for a while to catch crashes.
-func _bot_input(delta: float) -> Dictionary:
-	bot_time += delta
-	if absf(player.position.x - bot_last_x) < 0.5:
-		bot_stuck += delta
-	else:
-		bot_stuck = 0.0
-	bot_last_x = player.position.x
-	if bot_stuck > 1.2:
-		bot_dir = -bot_dir
-		bot_stuck = 0.0
-	if boss and is_instance_valid(boss):
-		# Stay a little way from the boss and face it, so fireballs and slashes land.
-		var dx: float = boss.center().x - player.center().x
-		bot_dir = int(signf(dx)) if absf(dx) > 90.0 else -int(signf(dx))
-	var phase := fmod(bot_time, 0.9)
-	var jump_now := phase < delta
-	if jump_now:
-		stats["jumps"] += 1
-	if bot_time > (90.0 if autotest == "boss" else 60.0):
-		_finish_play_test("timeout")
-	return {
-		"x": float(bot_dir), "y": -1.0 if fmod(bot_time, 4.0) < 0.5 else 0.0,
-		"jump_pressed": jump_now, "jump_held": phase < 0.35,
-		"dash_pressed": fmod(bot_time, 2.1) < delta,
-		"attack_pressed": fmod(bot_time, 0.5) < delta,
-		"spell_pressed": fmod(bot_time, 3.0) < delta,
-	}
-
-
-func _finish_play_test(result: String) -> void:
-	var boss_hp: int = boss.hp if boss and is_instance_valid(boss) else 0
-	print("PLAYTEST mode=%s result=%s depth=%d levels=%d time=%.1f kills=%d gold=%d blasted=%d jumps=%d hits=%d boss_hp=%d" % [
-		autotest, result, depth, stats["levels"], run_time, kills, gold, stats["blasted"], stats["jumps"], stats["hits"], boss_hp])
-	get_tree().quit()
-	set_physics_process(false)
-	state = "over"

@@ -45,22 +45,19 @@ jobs:
           unzip -q -j templates.tpz 'templates/web_*' 'templates/version.txt' -d "$T"
           rm templates.tpz
 
-      - name: Smoke test (300 levels are solvable, check the village rules, then a bot plays a run and fights the boss)
+      - name: Self-tests (battle rules and bot battles, mission routes, village rules, then a bot plays a whole mission)
         run: |
           G=~/godot/Godot_v${GODOT_VERSION}-stable_linux.x86_64
           $G --headless --import --path . > /dev/null 2>&1 || true
-          out=$($G --headless --path . -- --autotest=levels 2>&1) || { echo "$out"; exit 1; }
-          echo "$out" | grep "LEVELTEST.*failures=0" || { echo "$out"; exit 1; }
-          if echo "$out" | grep -E "SCRIPT ERROR|ERROR:"; then exit 1; fi
-          out=$($G --headless --path . -- --autotest=village 2>&1) || { echo "$out"; exit 1; }
-          echo "$out" | grep "VILLAGETEST.*failures=0" || { echo "$out"; exit 1; }
-          if echo "$out" | grep -E "SCRIPT ERROR|ERROR:"; then exit 1; fi
-          out=$($G --headless --path . -- --autotest=controls 2>&1) || { echo "$out"; exit 1; }
-          echo "$out" | grep "CONTROLTEST.*failures=0" || { echo "$out"; exit 1; }
-          if echo "$out" | grep -E "SCRIPT ERROR|ERROR:"; then exit 1; fi
-          for mode in play boss; do
-            out=$($G --headless --fixed-fps 60 --path . -- --autotest=$mode 2>&1)
-            echo "$out" | grep PLAYTEST || { echo "$out"; exit 1; }
+          for t in battles missions village; do
+            out=$(timeout 600 $G --headless --path . -- --autotest=$t 2>&1) || { echo "$out"; exit 1; }
+            echo "$out" | grep -i "test.*failures=0" || { echo "$out"; exit 1; }
+            echo "$out" | grep -E "bot" || true
+            if echo "$out" | grep -E "SCRIPT ERROR|ERROR:"; then exit 1; fi
+          done
+          for i in 1 2 3; do
+            out=$(timeout 300 $G --headless --fixed-fps 60 --path . -- --autotest=play 2>&1)
+            echo "$out" | grep "PLAYTEST result" || { echo "$out"; exit 1; }
             if echo "$out" | grep -E "SCRIPT ERROR|ERROR:"; then exit 1; fi
           done
 

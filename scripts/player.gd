@@ -5,6 +5,9 @@ extends Node2D
 const Data = preload("res://scripts/data.gd")
 
 const SIZE := Vector2(18, 26)
+## Boosts that carry over from one level to the next within a run.
+const BOOST_PROPS := ["hearts", "max_hearts", "air_jumps", "max_dashes", "sword_reach", "fire_cooldown",
+	"stomp_heal", "dash_strike", "fire_count", "blast_radius", "sword_damage", "spike_boots", "magnet"]
 
 var game: Node
 var level: Node
@@ -24,6 +27,7 @@ var attack_cd := 0.0
 var fire_cd := 0.0
 var squash := Vector2.ONE
 var trail: Array = []
+var drop_time := 0.0  # dropping down through a wooden ledge
 
 var hearts := Data.MAX_HEARTS
 var max_hearts := Data.MAX_HEARTS
@@ -35,6 +39,11 @@ var sword_reach := Data.SWORD_REACH
 var fire_cooldown := Data.FIREBALL_COOLDOWN
 var stomp_heal := false
 var dash_strike := false
+var fire_count := 1
+var blast_radius := Data.FIREBALL_RADIUS
+var sword_damage := 1
+var spike_boots := false
+var magnet := false
 
 
 func center() -> Vector2:
@@ -57,6 +66,7 @@ func step(delta: float, inp: Dictionary) -> void:
 	attack_time -= delta
 	attack_cd -= delta
 	fire_cd -= delta
+	drop_time -= delta
 	squash = squash.lerp(Vector2.ONE, min(delta * 12.0, 1.0))
 
 	var x_in: float = inp["x"]
@@ -81,6 +91,14 @@ func step(delta: float, inp: Dictionary) -> void:
 		jump_buffer = 0.0
 		squash = Vector2(1.3, 0.75) if dash_dir.y == 0.0 else Vector2(0.75, 1.3)
 		game.on_dash(self)
+
+	# Down + jump on a wooden ledge drops you through it.
+	if grounded and y_in > 0.0 and jump_buffer > 0.0 and level.on_ledge_only(position, SIZE):
+		drop_time = 0.2
+		jump_buffer = 0.0
+		grounded = false
+		coyote = 0.0
+		position.y += 2.0
 
 	var wall: int = level.wall_side(position, SIZE) if not grounded else 0
 
@@ -126,7 +144,8 @@ func step(delta: float, inp: Dictionary) -> void:
 
 	var was_grounded := grounded
 	var fall_speed := vel.y
-	var res: Dictionary = level.move_box(position, SIZE, vel * delta)
+	var dropping := drop_time > 0.0
+	var res: Dictionary = level.move_box(position, SIZE, vel * delta, dropping)
 	position = res["pos"]
 	if res["hit_x"]:
 		vel.x = 0.0
@@ -134,7 +153,9 @@ func step(delta: float, inp: Dictionary) -> void:
 			dash_time = 0.0
 	if res["hit_y"]:
 		vel.y = 0.0
-	grounded = level.on_floor(position, SIZE) and vel.y >= 0.0
+	grounded = level.on_floor(position, SIZE, dropping) and vel.y >= 0.0
+	if grounded:
+		level.step_on(position, SIZE)
 	if grounded and not was_grounded:
 		if fall_speed > 300.0:
 			squash = Vector2(1.3, 0.7)

@@ -37,20 +37,39 @@ const ENEMIES := {
 	"slime": {"hp": 2, "speed": 60.0, "size": Vector2(24, 18), "color": Color(0.45, 0.85, 0.45)},
 	"bat": {"hp": 1, "speed": 115.0, "size": Vector2(22, 14), "color": Color(0.6, 0.45, 0.8), "wake_range": 210.0},
 	"brute": {"hp": 4, "speed": 45.0, "size": Vector2(28, 30), "color": Color(0.85, 0.4, 0.35)},
+	# Frogs hop toward you when you're in range.
+	"frog": {"hp": 2, "speed": 170.0, "size": Vector2(22, 18), "color": Color(0.3, 0.75, 0.7), "hop": 540.0, "range": 300.0},
+	# Spitters sit still and lob globs at you.
+	"spitter": {"hp": 2, "speed": 0.0, "size": Vector2(24, 22), "color": Color(0.85, 0.75, 0.3), "range": 330.0, "cooldown": 2.2},
 }
 
+## The Cave King, waiting at the bottom of the last cave. Below half health it gets faster and meaner.
+const BOSS := {
+	"hp": 30, "size": Vector2(60, 52), "color": Color(0.5, 0.42, 0.6),
+	"speed": 90.0, "charge_speed": 430.0, "leap_speed": 820.0, "wave_speed": 330.0,
+}
+
+const CRUMBLE_TIME := 0.45           # how long a crumbling block holds you before it falls
+
 # ---------------------------------------------------------------- run structure
-const DEPTHS := 3                    # levels per run, the last one is deeper and meaner
+const CAVES := 3                     # random caves per run, each one deeper and meaner
+const DEPTHS := CAVES + 1            # ...then the boss's lair
 const ROOMS_X := 4
 const ROOMS_Y := 4
 
 ## Small boosts offered between levels. They last for this run only.
+## "unique" ones are only offered until you take them.
 const BOONS := [
 	{"id": "double_jump", "text": "Double jump"},
 	{"id": "extra_dash", "text": "One extra dash in the air"},
 	{"id": "heart", "text": "+1 max heart, and heal 1"},
 	{"id": "long_sword", "text": "Longer sword reach"},
 	{"id": "fire_haste", "text": "Fireball recharges 40% faster"},
-	{"id": "stomp_heal", "text": "Stomping an enemy has a chance to heal"},
-	{"id": "dash_strike", "text": "Dashing through enemies hurts them"},
+	{"id": "stomp_heal", "text": "Stomping an enemy has a chance to heal", "unique": true},
+	{"id": "dash_strike", "text": "Dashing through enemies hurts them", "unique": true},
+	{"id": "triple_fire", "text": "Fire throws three fireballs in a spread", "unique": true},
+	{"id": "big_boom", "text": "Bigger explosions", "unique": true},
+	{"id": "sharp_sword", "text": "Sword hits twice as hard", "unique": true},
+	{"id": "spike_boots", "text": "Spike-proof boots", "unique": true},
+	{"id": "gold_magnet", "text": "Gold flies to you", "unique": true},
 ]

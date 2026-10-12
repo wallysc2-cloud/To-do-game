@@ -90,7 +90,9 @@ func step(delta: float, inp: Dictionary) -> void:
 
 	# Dash: 8 directions, straight ahead if no direction is held.
 	if inp["dash_pressed"] and dashes_left > 0 and not is_dashing():
-		var d := Vector2(signf(x_in), signf(y_in))
+		var d: Vector2 = inp.get("dash_dir", Vector2.ZERO)
+		if d == Vector2.ZERO:
+			d = Vector2(signf(x_in), signf(y_in))
 		if d == Vector2.ZERO:
 			d = Vector2(facing, 0)
 		dash_dir = d.normalized()

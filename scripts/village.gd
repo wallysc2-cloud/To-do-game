@@ -192,7 +192,7 @@ func open_intro() -> void:
 	_label(box, "Add tasks at the Quest Board. Finishing one gives energy, gold and a treasure chest. Chests can hold trinkets you can't get any other way.", 20, Color(1, 1, 1, 0.8))
 	_label(box, "Each trip into the cave costs %d energy. Energy also comes back slowly by itself, 1 every 15 minutes, up to %d." % [int(Profile.ENERGY_PER_RUN), int(Profile.ENERGY_CAP)], 20, Color(1, 1, 1, 0.8))
 	_label(box, "Gold you find in the cave is yours to keep, even if you fall. Spend it at the Blacksmith.", 20, Color(1, 1, 1, 0.8))
-	_label(box, "In the cave: drag on the left half to move, with Jump, Dash, Sword and Fire on the right. Down + Jump drops through wooden ledges. Reach the door at the bottom of 3 caves, then beat the Cave King.", 20, Color(1, 1, 1, 0.8))
+	_label(box, "In the cave: drag on the left half to move. On the right half, tap to jump (hold to jump higher) and swipe to dash in any direction, even in the air. Sword and Fire are the two buttons on the right. Down + Jump drops through wooden ledges. Reach the door at the bottom of 3 caves, then beat the Cave King.", 20, Color(1, 1, 1, 0.8))
 	_button(box, "Let's go", func():
 		profile.data["seen_intro"] = true
 		profile.save()

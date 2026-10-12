@@ -35,7 +35,7 @@ A 2D platformer roguelite in the spirit of Spelunky and Celeste. Hold your phone
 
 Controls:
 
-- **Phone:** drag on the left half to move. Jump, Dash, Sword and Fire buttons sit on the right.
+- **Phone:** drag on the left half to move. On the right half, tap to jump (hold for a higher jump) and swipe to dash that way, in 8 directions, even in the air. Sword and Fire are two small buttons on the right.
 - **Keyboard:** arrows or WASD to move, Space or Z to jump, X or Shift to dash, C or J for Sword, V or K for Fire.
 
 ## Tuning
@@ -52,7 +52,7 @@ Room layouts are the text templates at the top of `scripts/level_gen.gd`.
 - `scripts/level_gen.gd` builds a cave from room templates; `scripts/level.gd` draws it and handles tile collision.
 - `scripts/player.gd`, `enemy.gd`, `boss.gd`, `shot.gd`, `fireball.gd`, `fx.gd` and `hud.gd` are the pieces it uses.
 - Every push and pull request generates 300 caves and checks the door can be reached in each,
-  checks the village rules (energy, tasks, chests, upgrades, backups),
+  checks the village rules (energy, tasks, chests, upgrades, backups) and the touch controls,
   then a bot plays a run and fights the boss in headless Godot. The build fails on any script error.
 - Pushes to `main` export the game for the web and publish it with GitHub Pages.
 
@@ -66,6 +66,7 @@ Headless tests:
 godot --headless --import --path .
 godot --headless --path . -- --autotest=levels
 godot --headless --path . -- --autotest=village
+godot --headless --path . -- --autotest=controls
 godot --headless --fixed-fps 60 --path . -- --autotest=play
 godot --headless --fixed-fps 60 --path . -- --autotest=boss
 ```

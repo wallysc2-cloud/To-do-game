@@ -83,6 +83,8 @@ func _ready() -> void:
 			_test_levels()
 		"village":
 			_test_village()
+		"controls":
+			_test_controls()
 		"play":
 			start_run()
 		"boss":
@@ -220,6 +222,7 @@ func _gather_input(delta: float) -> Dictionary:
 		"jump_pressed": touch["jump"] or (keys["jump"] and not key_prev.get("jump", false)),
 		"jump_held": hud.held["jump"] or keys["jump"],
 		"dash_pressed": touch["dash"] or (keys["dash"] and not key_prev.get("dash", false)),
+		"dash_dir": touch["dash_dir"],
 		"attack_pressed": touch["attack"] or (keys["attack"] and not key_prev.get("attack", false)),
 		"spell_pressed": touch["spell"] or (keys["spell"] and not key_prev.get("spell", false)),
 	}
@@ -804,6 +807,81 @@ func _test_village() -> void:
 		print("VILLAGETEST failed: " + f)
 	print("VILLAGETEST checks failures=%d" % fails.size())
 	DirAccess.remove_absolute(ProjectSettings.globalize_path(p.path))
+	get_tree().quit(1 if fails.size() > 0 else 0)
+
+
+## Feeds fake touches to the on-screen controls: tap = jump, hold = high jump,
+## swipe = dash in the swipe's direction (snapped to 8), and checks the hero responds.
+func _test_controls() -> void:
+	var fails: Array = []
+	var check := func(ok: bool, what: String):
+		if not ok:
+			fails.append(what)
+	start_run()
+	var view := get_viewport().get_visible_rect().size
+	var right := Vector2(view.x * 0.75, view.y * 0.6)
+	var touch := func(i: int, at: Vector2, down: bool):
+		var e := InputEventScreenTouch.new()
+		e.index = i
+		e.position = at
+		e.pressed = down
+		hud._input(e)
+	var drag := func(i: int, at: Vector2):
+		var e := InputEventScreenDrag.new()
+		e.index = i
+		e.position = at
+		hud._input(e)
+
+	# Quick tap: a short hop on release.
+	touch.call(1, right, true)
+	touch.call(1, right, false)
+	var got: Dictionary = hud.take_pressed()
+	check.call(got["jump"] and not got["dash"] and not hud.held["jump"], "quick tap jumps (short hop)")
+
+	# Hold: becomes a held jump once the tap delay passes.
+	touch.call(2, right, true)
+	hud.touches[2]["start"] -= 1.0  # pretend the finger has been down a while
+	got = hud.take_pressed()
+	check.call(got["jump"] and hud.held["jump"], "holding jumps and stays held")
+	touch.call(2, right, false)
+	check.call(not hud.held["jump"], "letting go ends the held jump")
+
+	# Swipes dash, snapped to 8 directions, without jumping.
+	var swipes := {
+		Vector2(40, 0): Vector2.RIGHT, Vector2(-40, 5): Vector2.LEFT, Vector2(3, -40): Vector2.UP,
+		Vector2(-30, -30): Vector2(-1, -1).normalized(), Vector2(30, 28): Vector2(1, 1).normalized(),
+	}
+	for move in swipes:
+		touch.call(3, right, true)
+		drag.call(3, right + move)
+		got = hud.take_pressed()
+		check.call(got["dash"] and not got["jump"], "swipe %s dashes without jumping" % move)
+		check.call(got["dash_dir"].is_equal_approx(swipes[move]), "swipe %s goes %s (got %s)" % [move, swipes[move], got["dash_dir"]])
+		touch.call(3, right + move, false)
+		check.call(not hud.take_pressed()["jump"], "lifting after a swipe doesn't jump")
+
+	# Jump then swipe while still holding: jump, then an air dash.
+	touch.call(4, right, true)
+	hud.touches[4]["start"] -= 1.0
+	check.call(hud.take_pressed()["jump"], "hold jumps first")
+	drag.call(4, right + Vector2(40, 0))
+	got = hud.take_pressed()
+	check.call(got["dash"] and not hud.held["jump"], "swipe during a held jump dashes")
+	touch.call(4, right + Vector2(40, 0), false)
+
+	# The hero really dashes up when told to.
+	player.vel = Vector2.ZERO
+	for i in 30:
+		player.step(1.0 / 60.0, {"x": 0.0, "y": 0.0, "jump_pressed": false, "jump_held": false, "dash_pressed": false, "attack_pressed": false, "spell_pressed": false})
+	var y0: float = player.position.y
+	player.step(1.0 / 60.0, {"x": 0.0, "y": 0.0, "jump_pressed": false, "jump_held": false, "dash_pressed": true, "dash_dir": Vector2.UP, "attack_pressed": false, "spell_pressed": false})
+	for i in 8:
+		player.step(1.0 / 60.0, {"x": 0.0, "y": 0.0, "jump_pressed": false, "jump_held": false, "dash_pressed": false, "attack_pressed": false, "spell_pressed": false})
+	check.call(y0 - player.position.y > 40.0, "up-dash lifts the hero (moved %.0f px)" % (y0 - player.position.y))
+
+	for f in fails:
+		print("CONTROLTEST failed: " + f)
+	print("CONTROLTEST checks failures=%d" % fails.size())
 	get_tree().quit(1 if fails.size() > 0 else 0)
 
 

@@ -55,6 +55,9 @@ jobs:
           out=$($G --headless --path . -- --autotest=village 2>&1) || { echo "$out"; exit 1; }
           echo "$out" | grep "VILLAGETEST.*failures=0" || { echo "$out"; exit 1; }
           if echo "$out" | grep -E "SCRIPT ERROR|ERROR:"; then exit 1; fi
+          out=$($G --headless --path . -- --autotest=controls 2>&1) || { echo "$out"; exit 1; }
+          echo "$out" | grep "CONTROLTEST.*failures=0" || { echo "$out"; exit 1; }
+          if echo "$out" | grep -E "SCRIPT ERROR|ERROR:"; then exit 1; fi
           for mode in play boss; do
             out=$($G --headless --fixed-fps 60 --path . -- --autotest=$mode 2>&1)
             echo "$out" | grep PLAYTEST || { echo "$out"; exit 1; }

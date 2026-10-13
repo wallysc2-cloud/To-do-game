@@ -14,7 +14,7 @@ const ROOM_COLORS := {
 }
 
 var m: Dictionary
-var profile: RefCounted
+var stats: Callable   # hero kind -> their numbers on this mission
 var spots := {}       # [layer, index] -> position on screen
 var chosen := []      # the room you tapped, waiting for Go
 var info: Label
@@ -22,9 +22,9 @@ var go_button: Button
 var font: Font = ThemeDB.fallback_font
 
 
-func setup(mission: Dictionary, p: RefCounted) -> void:
+func setup(mission: Dictionary, stats_fn: Callable) -> void:
 	m = mission
-	profile = p
+	stats = stats_fn
 	set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	mouse_filter = Control.MOUSE_FILTER_STOP
 	info = Label.new()
@@ -107,10 +107,17 @@ func _draw() -> void:
 	draw_rect(Rect2(Vector2.ZERO, size), Color(0.1, 0.1, 0.14))
 	draw_string(font, Vector2(150, 46), "Mission %d" % m["level"], HORIZONTAL_ALIGNMENT_LEFT, -1, 30, Color.WHITE)
 	var gold_line := "Gold found %d" % m["gold"]
+	if not m["bag"].is_empty():
+		gold_line += "    Gear in bag %d" % m["bag"].size()
 	if int(m["crystal"]) > 0:
 		gold_line += "    +%d Focus next battle" % m["crystal"]
 	draw_string(font, Vector2(150, 80), gold_line, HORIZONTAL_ALIGNMENT_LEFT, -1, 22, Color(1, 0.85, 0.35))
 	_draw_squad(Vector2(w - 24, 14))
+	if not m["boons"].is_empty():
+		var names := []
+		for b in m["boons"]:
+			names.append(Data.BOONS[b]["name"])
+		draw_string(font, Vector2(w - 594, 108), "Blessings: " + ", ".join(names), HORIZONTAL_ALIGNMENT_LEFT, 580, 17, Color(1, 0.9, 0.6, 0.85))
 
 	var path: Array = m.get("path", [])
 	var options := Mission.choices(m)
@@ -186,7 +193,7 @@ func _icon(kind: String, p: Vector2, r: float) -> void:
 func _draw_squad(top_right: Vector2) -> void:
 	var x := top_right.x - 3 * 190.0
 	for kind in Data.HERO_ORDER:
-		var st: Dictionary = profile.hero_stats(kind)
+		var st: Dictionary = stats.call(kind)
 		var hp := int(m["hp"].get(kind, 0))
 		var col: Color = Data.HEROES[kind]["color"]
 		draw_circle(Vector2(x + 18, top_right.y + 30), 16, col if hp > 0 else Color(0.3, 0.3, 0.3))

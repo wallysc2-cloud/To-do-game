@@ -93,3 +93,60 @@ const STARTING_GEAR := {
 	"ranger": {"weapon": "short_bow", "armour": "cloth", "charm": ""},
 	"mage": {"weapon": "oak_staff", "armour": "cloth", "charm": ""},
 }
+
+# ---------------------------------------------------------------- hero levels
+## XP each hero gets for winning a room's battle (heroes who fell in it get half).
+const XP := {"battle": 10, "elite": 20, "boss": 40}
+const XP_PER_LEVEL := 30    # reaching level n + 1 takes 30 x n XP
+const MAX_LEVEL := 10
+## Every level gives +1 health; these levels also give +1 damage.
+const DAMAGE_LEVELS := [3, 6, 9]
+
+# ---------------------------------------------------------------- loot
+## Gear found on missions. It goes in the mission's bag and comes home when the mission ends.
+const LOOT_CHANCE := {"battle": 0.15, "elite": 0.6, "treasure": 0.5, "boss": 1.0}
+const RARITIES := {
+	"common": {"name": "Common", "weight": 60, "rolls": 1, "color": Color(0.85, 0.85, 0.85)},
+	"rare": {"name": "Rare", "weight": 30, "rolls": 2, "color": Color(0.45, 0.7, 1.0)},
+	"epic": {"name": "Epic", "weight": 10, "rolls": 3, "color": Color(0.8, 0.5, 1.0)},
+}
+const RARITY_ORDER := ["common", "rare", "epic"]
+const LOOT_WEAPONS := {"knight": ["Sword", "Axe", "Mace"], "ranger": ["Bow", "Longbow", "Sling"], "mage": ["Staff", "Wand", "Orb"]}
+const LOOT_ARMOUR := ["Coat", "Mail", "Robe", "Vest"]
+## What a roll can add. Weapons and armour each pick from their own list.
+const WEAPON_ROLLS := [{"damage": 1}, {"damage": 1}, {"range": 1}, {"spell": 1}, {"move": 1}, {"hp": 2}]
+const ARMOUR_ROLLS := [{"hp": 2}, {"hp": 3}, {"armour": 1}, {"move": 1}, {"focus_start": 1}]
+## Weapons can carry an element (rare ones sometimes, epic ones always). It changes how they hit.
+const ELEMENTS := {
+	"fire": {"name": "Flaming", "text": "Hits set monsters on fire: 2 more damage when their turn starts"},
+	"frost": {"name": "Frozen", "text": "Hits chill monsters: they can only move 1 tile next turn"},
+	"storm": {"name": "Storm", "text": "Hits spark 1 damage onto every other monster next to the target"},
+	"holy": {"name": "Holy", "text": "Heals this hero 1 for every hit"},
+}
+const ELEMENT_ORDER := ["fire", "frost", "storm", "holy"]
+
+# ---------------------------------------------------------------- blessings
+## After each battle you pick 1 of 3. They last for the rest of the mission.
+const BOONS := {
+	"tough": {"name": "Iron Skin", "text": "Everyone +2 max health (and heals 2)"},
+	"sharp": {"name": "Whetstone", "text": "Everyone deals +1 damage"},
+	"swift": {"name": "Light Boots", "text": "Everyone moves +1 tile"},
+	"flow": {"name": "Deep Breath", "text": "+1 Focus every turn"},
+	"ready": {"name": "War Cry", "text": "Start every battle with +2 Focus"},
+	"mend": {"name": "Field Dressing", "text": "Heal everyone 6 right now", "repeat": true},
+	"warded": {"name": "Ward Stone", "text": "Everyone +1 armour"},
+}
+
+# ---------------------------------------------------------------- when your squad falls
+## Picked when you start. You can make it gentler later, never harsher. Retreating is always safe.
+const PENALTIES := {
+	"nothing": {"name": "Relaxed", "text": "Keep the gold and gear you found."},
+	"loot": {"name": "Normal", "text": "Keep the gold, but lose the gear in the mission's bag."},
+	"bag": {"name": "Tough", "text": "Lose the gold and the gear you found on that mission."},
+	"hardcore": {"name": "Hardcore", "text": "Start over: gold, gear, levels and progress are wiped. Task charms are always kept."},
+}
+const PENALTY_ORDER := ["nothing", "loot", "bag", "hardcore"]
+
+# ---------------------------------------------------------------- daily tasks
+const STREAK_MAX := 5          # bonus stops growing after 5 days in a row
+const STREAK_GOLD := 10        # +10% chest gold per streak day

@@ -1,7 +1,8 @@
 ## A mission: a route of rooms, left to right, that branches so you pick your way to the boss.
 ## Kept as a plain Dictionary so it can sit in the save and survive closing the app.
 ##   {level, layers: [[{kind, links: [index in next layer]}]], at: [layer, index],
-##    hp: {hero kind: health}, gold, crystal (bonus Focus for the next battle), path: rooms done}
+##    hp: {hero kind: health}, gold, crystal (bonus Focus for the next battle), path: rooms done,
+##    boons: blessings picked, bag: gear found}
 ## Pure logic, no UI, so the self-test can check the routes.
 extends RefCounted
 
@@ -31,7 +32,7 @@ static func generate(rng: RandomNumberGenerator, level: int, squad_hp: Dictionar
 			last.append({"kind": "battle", "links": []})
 	layers.append([{"kind": "boss", "links": []}])
 	_link(rng, layers)
-	return {"level": level, "layers": layers, "at": [-1, 0], "hp": squad_hp.duplicate(), "gold": 0, "crystal": 0, "path": []}
+	return {"level": level, "layers": layers, "at": [-1, 0], "hp": squad_hp.duplicate(), "gold": 0, "crystal": 0, "path": [], "boons": [], "bag": []}
 
 
 static func _pick_kind(rng: RandomNumberGenerator) -> String:
@@ -115,6 +116,15 @@ static func normalize(m: Dictionary) -> Dictionary:
 			n["links"] = n["links"].map(func(k): return int(k))
 	for kind in m["hp"]:
 		m["hp"][kind] = int(m["hp"][kind])
+	if not m.has("boons"):
+		m["boons"] = []
+	if not m.has("bag"):
+		m["bag"] = []
+	for it in m["bag"]:
+		it["value"] = int(it["value"])
+		for k in it["mods"]:
+			if not (it["mods"][k] is String):
+				it["mods"][k] = int(it["mods"][k])
 	return m
 
 

@@ -28,9 +28,12 @@ func _ready() -> void:
 	add_child(ui)
 	ui_theme = _make_theme()
 
+	var preview := ""
 	for arg in OS.get_cmdline_user_args():
 		if arg.begins_with("--autotest="):
 			autotest = arg.get_slice("=", 1)
+		if arg.begins_with("--preview="):
+			preview = arg.get_slice("=", 1)
 	profile = ProfileScript.new()
 	if autotest == "":
 		profile.load_or_new()
@@ -52,6 +55,8 @@ func _ready() -> void:
 			begin_run_from_village()
 		_:
 			show_village()
+			if preview != "":
+				_preview(preview)
 
 
 func m() -> Dictionary:
@@ -94,7 +99,7 @@ func show_map() -> void:
 	var map := Control.new()
 	map.set_script(MapScript)
 	_set_screen(map)
-	map.setup(m(), profile)
+	map.setup(m(), stats_for)
 	map.picked.connect(enter_room)
 	map.retreat_pressed.connect(_ask_retreat)
 	if autotest == "play":
@@ -118,9 +123,10 @@ func enter_room(layer: int, index: int) -> void:
 			var g: int = 15 + 6 * m()["level"] + rng.randi_range(0, 10)
 			m()["gold"] += g
 			lines = ["The chest holds %d gold." % g]
+			lines.append_array(_roll_loot("treasure"))
 		"shrine":
 			for hk in Data.HERO_ORDER:
-				var top: int = profile.hero_stats(hk)["hp"]
+				var top: int = stats_for(hk)["hp"]
 				var hp: int = m()["hp"][hk]
 				m()["hp"][hk] = top / 2 if hp <= 0 else hp + (top - hp + 1) / 2
 			lines = ["Your squad heals half their wounds.", "Anyone who fell gets back up."]
@@ -145,9 +151,12 @@ func start_battle(layer: int, index: int, kind: String) -> void:
 	var enemies: Array = lists[rng.randi() % lists.size()]
 	var heroes := []
 	for hk in Data.HERO_ORDER:
-		heroes.append({"kind": hk, "hp": m()["hp"][hk], "stats": profile.hero_stats(hk)})
+		heroes.append({"kind": hk, "hp": m()["hp"][hk], "stats": stats_for(hk)})
 	var c := Combat.new()
-	c.setup(rng, heroes, enemies, m()["level"], profile.start_focus() + m()["crystal"])
+	var boons: Array = m()["boons"]
+	c.setup(rng, heroes, enemies, m()["level"], profile.start_focus() + m()["crystal"] + (2 if boons.has("ready") else 0))
+	if boons.has("flow"):
+		c.focus_bonus += 1
 	var b := Control.new()
 	b.set_script(BattleScript)
 	_set_screen(b)
@@ -161,6 +170,7 @@ func start_battle(layer: int, index: int, kind: String) -> void:
 
 func _battle_done(result: String, layer: int, index: int, kind: String, c: RefCounted) -> void:
 	test_log["battles"] += 1
+	var lines := []
 	for u in c.units:
 		if u["side"] == "hero":
 			m()["hp"][u["kind"]] = u["hp"]
@@ -168,28 +178,106 @@ func _battle_done(result: String, layer: int, index: int, kind: String, c: RefCo
 	var gold: int = c.gold_found + (15 if kind == "elite" else 0)
 	m()["gold"] += gold
 	if result != "win":
-		_end_mission(false, "Your squad has fallen")
+		_end_mission(false, "Your squad has fallen", true)
 		return
+	lines.append("+%d gold" % gold)
+	# Everyone who fought learns something; those who fell learn half as much.
+	for u in c.units:
+		if u["side"] == "hero":
+			var xp: int = Data.XP[kind] if u["hp"] > 0 else Data.XP[kind] / 2
+			if profile.add_xp(u["kind"], xp) > 0:
+				lines.append("%s reached level %d!" % [u["name"], profile.hero_level(u["kind"])])
+	lines.append_array(_roll_loot(kind))
 	_arrive(layer, index)
 	if kind == "boss":
-		_end_mission(true, "The Bone King is beaten!")
+		_end_mission(true, "The Bone King is beaten!", false, lines)
 		return
 	profile.save()
 	show_map()
-	if autotest == "":
-		_message("Victory!", ["+%d gold" % gold], "Onward", _clear_overlay)
+	_offer_boons(lines)
 
 
-func _end_mission(won: bool, headline: String) -> void:
+## Maybe finds a piece of gear for the mission's bag. Returns a line saying what, if anything.
+func _roll_loot(kind: String) -> Array:
+	if rng.randf() >= Data.LOOT_CHANCE.get(kind, 0.0):
+		return []
+	var it: Dictionary = ProfileScript.make_loot(rng, m()["level"])
+	m()["bag"].append(it)
+	return ["Found: %s (%s)" % [it["name"], Data.RARITIES[it["rarity"]]["name"].to_lower()]]
+
+
+## A hero's numbers on this mission: their gear and level plus the blessings picked so far.
+func stats_for(kind: String) -> Dictionary:
+	var st: Dictionary = profile.hero_stats(kind)
+	if mission_active():
+		for b in m()["boons"]:
+			match b:
+				"tough":
+					st["hp"] += 2
+				"sharp":
+					st["damage"] += 1
+				"swift":
+					st["move"] += 1
+				"warded":
+					st["armour"] += 1
+	return st
+
+
+## After a win: pick 1 of 3 blessings for the rest of the mission.
+func _offer_boons(lines: Array) -> void:
+	var options: Array = Data.BOONS.keys().filter(func(id): return Data.BOONS[id].get("repeat", false) or not m()["boons"].has(id))
+	for i in range(options.size() - 1, 0, -1):
+		var j := rng.randi_range(0, i)
+		var tmp = options[i]
+		options[i] = options[j]
+		options[j] = tmp
+	options = options.slice(0, 3)
+	if autotest != "":
+		take_boon(options[0])
+		return
+	var box := _new_overlay(true)
+	_label(box, "Victory!", 44)
+	for line in lines:
+		_label(box, line, 22, Color(1, 1, 1, 0.8))
+	_label(box, "Pick a blessing for the rest of this mission", 24, Color(1, 0.9, 0.6))
+	for id in options:
+		var b := _button(box, "%s: %s" % [Data.BOONS[id]["name"], Data.BOONS[id]["text"]], func():
+			take_boon(id)
+			show_map())
+		b.add_theme_font_size_override("font_size", 22)
+		b.custom_minimum_size = Vector2(0, 64)
+
+
+func take_boon(id: String) -> void:
+	match id:
+		"mend":
+			for hk in Data.HERO_ORDER:
+				if m()["hp"][hk] > 0:
+					m()["hp"][hk] = mini(stats_for(hk)["hp"], m()["hp"][hk] + 6)
+			return
+		"tough":
+			for hk in Data.HERO_ORDER:
+				if m()["hp"][hk] > 0:
+					m()["hp"][hk] += 2
+	m()["boons"].append(id)
+	profile.save()
+
+
+func _end_mission(won: bool, headline: String, fell := false, extra: Array = []) -> void:
 	var found: int = m()["gold"]
-	var banked: int = profile.end_run(found, won)
+	var got: Dictionary = profile.end_run(found, won, m()["bag"], fell)
 	if autotest == "play":
-		print("PLAYTEST result=%s rooms=%d battles=%d gold=%d" % ["win" if won else "lose", test_log["rooms"], test_log["battles"], banked])
+		print("PLAYTEST result=%s rooms=%d battles=%d gold=%d items=%d" % ["win" if won else "lose", test_log["rooms"], test_log["battles"], got["gold"], got["items"].size()])
 		get_tree().quit()
 		return
-	var lines := ["%d gold goes to the village." % banked]
-	if banked > found:
-		lines.append("(Your Lucky Coin added %d.)" % (banked - found))
+	var lines := extra.duplicate()
+	lines.append("%d gold goes to the village." % got["gold"])
+	if got["lucky"] > 0:
+		lines.append("(Your Lucky Coin added %d.)" % got["lucky"])
+	if not got["items"].is_empty():
+		lines.append("Brought home: " + ", ".join(got["items"]) + ". Equip it at the Armory.")
+	if got["lost"] != "":
+		lines.append(got["lost"])
 	if won:
 		lines.append("Next mission is a little tougher, and pays more.")
 	show_village()
@@ -197,12 +285,12 @@ func _end_mission(won: bool, headline: String) -> void:
 
 
 func _ask_retreat() -> void:
-	_message("Retreat?", ["Head home and keep the %d gold found so far. This mission ends." % m()["gold"]], "Retreat", func():
+	_message("Retreat?", ["Head home and keep everything found so far (%d gold, %d gear). This mission ends." % [m()["gold"], m()["bag"].size()]], "Retreat", func():
 		_end_mission(false, "Back home safe"), "Keep going")
 
 
 func _battle_menu() -> void:
-	_message("Paused", ["Retreat to keep the %d gold found so far. This mission ends." % m()["gold"]], "Retreat", func():
+	_message("Paused", ["Retreat to keep everything found so far (%d gold, %d gear). This mission ends." % [m()["gold"], m()["bag"].size()]], "Retreat", func():
 		_end_mission(false, "Back home safe"), "Keep fighting")
 
 
@@ -331,6 +419,35 @@ func _button(parent: Control, text: String, on_press: Callable) -> Button:
 	return b
 
 
+# ---------------------------------------------------------------- previews
+
+## Opens a screen with made-up progress, for checking how it looks. Not reachable in normal play.
+func _preview(what: String) -> void:
+	profile.path = "user://preview.json"
+	profile.data = ProfileScript.fresh()
+	profile.data["seen_intro"] = true
+	profile.data["penalty"] = "loot"
+	var r := RandomNumberGenerator.new()
+	r.seed = 4
+	for i in 6:
+		profile.add_loot(ProfileScript.make_loot(r, 3))
+	profile.add_xp("knight", 50)
+	profile.data["gold"] = 240
+	match what:
+		"boons":
+			begin_run_from_village()
+			m()["boons"] = ["sharp"]
+			_offer_boons(["+18 gold", "Bram reached level 2!", "Found: Flaming Axe (epic)"])
+		"armory":
+			village.open_hero("knight")
+		"quests":
+			profile.add_task("Stretch", "easy", ["Arms"], true)
+			profile.find_task(1)["streak"] = 3
+			profile.find_task(1)["done_on"] = ProfileScript.today()
+			profile.add_task("Clean the kitchen", "hard", ["Dishes", "Floor"])
+			village.open_quest_board()
+
+
 # ---------------------------------------------------------------- headless self-tests
 
 func _report(tag: String, fails: Array) -> void:
@@ -419,8 +536,77 @@ func _test_village() -> void:
 	check.call(p.hero_stats("knight")["move"] == Data.HEROES["knight"]["move"] + 2, "feather cloak adds move")
 	p.equip_item("mage", "charm", "lucky_coin")
 	var gold_before: int = p.data["gold"]
-	check.call(p.end_run(100, true) == 125 and p.data["gold"] == gold_before + 125, "lucky coin: +25% mission gold")
+	check.call(p.end_run(100, true)["gold"] == 125 and p.data["gold"] == gold_before + 125, "lucky coin: +25% mission gold")
 	check.call(p.data["mission_level"] == 2, "a win raises the mission level")
+	p.equip_item("mage", "charm", "")
+
+	# Daily tasks: stay on the board, once a day, streaks grow and only slip a step per missed day.
+	var daily := int(p.add_task("Stretch", "easy", ["Arms"], true)["id"])
+	var d1: Dictionary = p.complete_task(daily, r, "2026-01-01")
+	check.call(d1.get("streak", 0) == 1 and not p.find_task(daily).is_empty(), "daily task stays after finishing")
+	check.call(p.complete_task(daily, r, "2026-01-01").is_empty(), "daily task only once a day")
+	check.call(p.steps_left(p.find_task(daily)) == 1, "daily task's steps reset")
+	check.call(p.complete_task(daily, r, "2026-01-02")["streak"] == 2, "next day: 2-day streak")
+	p.complete_task(daily, r, "2026-01-03")
+	check.call(ProfileScript.streak_on(p.find_task(daily), "2026-01-06") == 1, "missing 2 days knocks 3 down to 1")
+	check.call(p.complete_task(daily, r, "2026-01-06")["streak"] == 2, "and it builds back up")
+	var plain: Dictionary = p.complete_task(int(p.add_task("Plain", "medium", [])["id"]), RandomNumberGenerator.new(), "2026-01-06")
+	p.find_task(daily)["streak"] = 6
+	p.find_task(daily)["done_on"] = "2026-01-06"
+	var r2 := RandomNumberGenerator.new()
+	check.call(p.complete_task(daily, r2, "2026-01-07")["gold"] >= 15 * 150 / 100, "a long streak pays +50%")
+	check.call(plain.get("streak", -1) == 0, "one-off tasks have no streak")
+	p.delete_task(daily)
+
+	# Hero levels.
+	var hp1: int = p.hero_stats("ranger")["hp"]
+	check.call(p.add_xp("ranger", 30) == 1 and p.hero_level("ranger") == 2, "30 XP: level 2")
+	check.call(p.hero_stats("ranger")["hp"] == hp1 + 1, "a level gives +1 health")
+	p.add_xp("ranger", 60 + 90)
+	check.call(p.hero_level("ranger") == 4 and p.hero_stats("ranger")["damage"] >= 1, "level 3 gives +1 damage")
+
+	# Loot.
+	var lr := RandomNumberGenerator.new()
+	lr.seed = 3
+	var elements := 0
+	for i in 300:
+		var it: Dictionary = ProfileScript.make_loot(lr, 1 + i % 5)
+		if it["name"] == "" or (it["slot"] == "weapon") != (it["hero"] != ""):
+			fails.append("bad loot %s" % it)
+		if it["rarity"] == "epic" and it["slot"] == "weapon" and not it["mods"].has("element"):
+			fails.append("epic weapon without an element")
+		if it["mods"].has("element"):
+			elements += 1
+	check.call(elements > 10, "some loot has elements (%d)" % elements)
+	var axe: Dictionary = p.add_loot({"uid": "", "name": "Flaming Axe", "slot": "weapon", "hero": "knight", "mods": {"damage": 2, "element": "fire"}, "rarity": "epic", "value": 90})
+	check.call(axe["uid"] != "" and p.owns(axe["uid"]), "found gear is owned")
+	check.call(not p.equip_item("mage", "weapon", axe["uid"]), "mage can't use an axe")
+	check.call(p.equip_item("knight", "weapon", axe["uid"]) and p.hero_stats("knight")["element"] == "fire", "knight wields the flaming axe")
+	var reload := ProfileScript.new()
+	reload.data = ProfileScript.fresh()
+	reload._merge(JSON.parse_string(JSON.stringify(p.data)))
+	check.call(reload.hero_stats("knight")["element"] == "fire" and reload.data["gear"]["knight"]["weapon"] == axe["uid"], "found gear survives saving")
+	var g1: int = p.data["gold"]
+	check.call(p.sell_loot(axe["uid"]) == 90 and p.data["gold"] == g1 + 90, "selling gear pays its value")
+	check.call(p.data["gear"]["knight"]["weapon"] == "iron_sword", "selling the worn weapon puts the old one back")
+
+	# Death settings: gentler only, and what each one costs.
+	check.call(p.set_penalty("bag") and not p.set_penalty("hardcore") and p.set_penalty("loot"), "death setting only gets gentler")
+	var sword: Dictionary = ProfileScript.make_loot(lr, 1)
+	g1 = p.data["gold"]
+	var lost: Dictionary = p.end_run(50, false, [sword], true)
+	check.call(lost["items"].is_empty() and p.data["gold"] == g1 + 50, "Normal: lose the bag, keep the gold")
+	var kept: Dictionary = p.end_run(50, false, [sword], false)
+	check.call(kept["items"].size() == 1, "retreating keeps the bag")
+	p.data["penalty"] = "bag"
+	g1 = p.data["gold"]
+	p.end_run(50, false, [sword], true)
+	check.call(p.data["gold"] == g1, "Tough: lose the gold too")
+	p.data["penalty"] = "hardcore"
+	var charms: int = p.data["trinkets"].size()
+	p.end_run(50, false, [], true)
+	check.call(p.data["gold"] == 0 and p.hero_level("ranger") == 1 and p.data["loot"].is_empty() and p.data["trinkets"].size() == charms, "Hardcore wipes all but task charms")
+	p.data["penalty"] = "loot"
 
 	# Old platformer saves: upgrades are refunded, gear is filled in.
 	var old := ProfileScript.new()
@@ -440,7 +626,10 @@ func _test_village() -> void:
 
 	# Open every window once.
 	p.data["seen_intro"] = false
+	p.data["penalty"] = ""
 	show_village()
+	village.open_penalty()
+	village.open_intro()
 	p.add_task("Laundry", "medium", ["Wash", "Hang"])
 	for open in [village.open_intro, village.open_quest_board, village.open_armory, village.open_vault]:
 		open.call()
@@ -461,8 +650,17 @@ func _test_village() -> void:
 	var e_before: float = p.energy(Time.get_unix_time_from_system())
 	village.open_gate()
 	check.call(state == "map" and is_equal_approx(p.energy(Time.get_unix_time_from_system()), e_before), "gate resumes a mission for free")
+	# Blessings change the squad for the rest of the mission.
+	var move0: int = stats_for("ranger")["move"]
+	take_boon("swift")
+	check.call(stats_for("ranger")["move"] == move0 + 1, "Light Boots blessing adds move")
+	m()["bag"].append(ProfileScript.make_loot(lr, 1))
+	show_map()
+	_offer_boons(["test"])
+	var loot_before: int = p.data["loot"].size()
 	_end_mission(false, "test")
 	check.call(not mission_active(), "retreating ends the mission")
+	check.call(p.data["loot"].size() == loot_before + 1, "retreating brings the bag home")
 
 	_report("VILLAGETEST", fails)
 
@@ -515,6 +713,31 @@ func _test_battles() -> void:
 	var rhp: int = ranger["hp"]
 	check.call(c.use_ability(mage, "fireball", spot), "fireball can be cast")
 	check.call(ranger["hp"] < rhp, "fireball burns a hero standing next to the target")
+	# Elements: fire burns at the start of the monsters' turn, storm splashes, holy heals.
+	c = _test_combat(r, ["brute", "skeleton"], 1)
+	knight = c.alive("hero").filter(func(u): return u["kind"] == "knight")[0]
+	knight["mods"] = knight["mods"].duplicate()
+	knight["mods"]["element"] = "fire"
+	var foe: Dictionary = c.alive("enemy").filter(func(u): return u["kind"] == "brute")[0]
+	var skel: Dictionary = c.alive("enemy").filter(func(u): return u["kind"] == "skeleton")[0]
+	_place(c, knight, Vector2i(3, 2))
+	_place(c, foe, Vector2i(4, 2))
+	_place(c, skel, Vector2i(4, 3))
+	var bhp: int = foe["hp"]
+	c.use_ability(knight, "slash", foe["cell"])
+	check.call(foe["burn"] == 2, "fire sets the target burning")
+	c.end_player_turn()
+	check.call(foe["hp"] == bhp - 3 - 2, "burning deals 2 more when their turn starts")
+	c.start_player_turn()
+	knight["mods"]["element"] = "storm"
+	var shp: int = skel["hp"]
+	c.use_ability(knight, "slash", foe["cell"])
+	check.call(skel["hp"] == shp - 1, "storm splashes 1 onto monsters next to the target")
+	c.start_player_turn()
+	knight["mods"]["element"] = "frost"
+	c.use_ability(knight, "slash", foe["cell"])
+	check.call(foe["hp"] <= 0 or foe["chill"] == 1, "frost chills")
+
 	# Pinning shot roots.
 	c = _test_combat(r, ["brute"], 1)
 	ranger = c.alive("hero").filter(func(u): return u["kind"] == "ranger")[0]

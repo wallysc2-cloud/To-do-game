@@ -12,9 +12,12 @@ Between missions you're in your home village. Tap a building:
 - **Quest Board:** your to-do list. Add a task, rate it Easy, Medium, Hard or Epic, and optionally split it into steps.
   Each step pays 5 gold. Finishing the task gives energy (1, 2, 4 or 8) and a chest of gold that may hold a charm.
   Epic tasks are limited to 2 a day unless you switch the limit off.
-- **Armory:** buy weapons and armour for your three heroes with gold, and put charms on them. Gear is yours for good.
+  A task can **repeat every day**: it stays on the board and builds a streak. Each day in a row adds 10% to its chest
+  (up to +50%) and a better charm chance. Missing a day knocks the streak down a step, not back to zero.
+- **Armory:** buy weapons and armour for your three heroes with gold, equip gear found on missions (or sell it),
+  and put charms on them. Each hero's level and XP shows here.
 - **Vault:** charms only come from task chests and are never lost. Each one changes a hero, usually with a trade-off.
-  You can also back up your save as a code and restore it.
+  You can also back up your save as a code and restore it, and change what happens when your squad falls.
 - **The gate:** a mission costs 4 energy. Energy refills by 1 every 15 minutes up to 12, and tasks can push it past 12.
   A mission in progress is saved, so you can close the game and carry on later for free.
 
@@ -34,7 +37,14 @@ A light take on Warhammer 40K: Mechanicus. Hold your phone sideways; everything 
   you get 1 more each turn, and stepping on a glowing crystal gives 2.
 - **Monsters:** skeletons, bone archers, ghoul brutes and grave shamans who heal the others. The Bone King slams
   everyone next to him and calls up more skeletons.
-- Gold you find is banked even if your squad falls or you retreat. Beating the Bone King makes the next mission tougher.
+- **After each battle** your heroes earn XP (a level gives +1 health; levels 3, 6 and 9 give +1 damage) and you pick
+  1 of 3 blessings for the rest of the mission, like +1 move for everyone or +1 Focus a turn.
+- **Loot:** battles, treasure and especially elites and the boss can drop random gear: common, rare or epic, with
+  extra stats. Some weapons carry an element: Flaming (sets monsters burning), Frozen (slows them),
+  Storm (sparks onto neighbours) or Holy (heals the wielder). Found gear rides in the mission's bag.
+- **If your squad falls:** you pick how harsh that is when you start (Relaxed, Normal, Tough or Hardcore), and can
+  make it gentler later but not harsher. Retreating always keeps everything. Beating the Bone King makes the next
+  mission tougher.
 
 ## Tuning
 

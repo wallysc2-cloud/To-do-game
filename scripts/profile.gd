@@ -1,10 +1,12 @@
-## Everything that lasts between runs: banked gold, energy, the to-do list, Blacksmith
-## upgrades and task trinkets. Saved as JSON in the browser's storage (user://).
+## Everything that lasts between missions: banked gold, energy, the to-do list, your squad's
+## gear, task charms and a mission in progress. Saved as JSON in the browser's storage (user://).
 ## Pure logic, no UI, so the self-test can check every number.
 extends RefCounted
 
+const Data = preload("res://scripts/data.gd")
+
 const SAVE_PATH := "user://save.json"
-const VERSION := 1
+const VERSION := 2
 
 # ---------------------------------------------------------------- tuning
 const ENERGY_CAP := 12.0          # time only refills you up to this; tasks can push past it
@@ -15,31 +17,15 @@ const STEP_GOLD := 5              # every finished step pays a little, however m
 
 ## Easy / Medium / Hard / Epic.
 const TIERS := {
-	"easy": {"name": "Easy", "energy": 1, "gold": 15, "trinket_chance": 0.05, "color": Color(0.45, 0.85, 0.5)},
-	"medium": {"name": "Medium", "energy": 2, "gold": 35, "trinket_chance": 0.15, "color": Color(0.4, 0.7, 1.0)},
-	"hard": {"name": "Hard", "energy": 4, "gold": 80, "trinket_chance": 0.35, "color": Color(1.0, 0.6, 0.25)},
-	"epic": {"name": "Epic", "energy": 8, "gold": 180, "trinket_chance": 0.75, "color": Color(0.85, 0.45, 1.0)},
+	"easy": {"name": "Easy", "energy": 1, "gold": 15, "charm_chance": 0.05, "color": Color(0.45, 0.85, 0.5)},
+	"medium": {"name": "Medium", "energy": 2, "gold": 35, "charm_chance": 0.15, "color": Color(0.4, 0.7, 1.0)},
+	"hard": {"name": "Hard", "energy": 4, "gold": 80, "charm_chance": 0.35, "color": Color(1.0, 0.6, 0.25)},
+	"epic": {"name": "Epic", "energy": 8, "gold": 180, "charm_chance": 0.75, "color": Color(0.85, 0.45, 1.0)},
 }
 const TIER_ORDER := ["easy", "medium", "hard", "epic"]
 
-## Blacksmith upgrades: permanent, bought with gold. cost[i] buys level i + 1.
-const UPGRADES := {
-	"heart": {"name": "Tough Heart", "text": "+1 max heart", "cost": [60, 150]},
-	"sword": {"name": "Sharper Sword", "text": "Longer reach; at level 3 it hits twice as hard", "cost": [40, 100, 200]},
-	"fire": {"name": "Quick Flame", "text": "Fire recharges 12% faster", "cost": [50, 120, 220]},
-}
-const UPGRADE_ORDER := ["heart", "sword", "fire"]
-
-## Trinkets only come from task chests and are never lost. They change how you play
-## rather than making you strictly stronger. Equip one at the Vault.
-const TRINKETS := {
-	"lucky_coin": {"name": "Lucky Coin", "text": "Gold pickups sometimes count double"},
-	"feather_cloak": {"name": "Feather Cloak", "text": "Jump higher and fall slower, but run a little slower"},
-	"ember_ring": {"name": "Ember Ring", "text": "Bigger explosions, but Fire recharges slower"},
-	"glass_blade": {"name": "Glass Blade", "text": "Sword hits twice as hard, but 1 less heart"},
-	"tiny_crown": {"name": "Tiny Crown", "text": "Just looks great. Wear it with pride"},
-}
-const TRINKET_ORDER := ["lucky_coin", "feather_cloak", "ember_ring", "glass_blade", "tiny_crown"]
+## What the old Blacksmith upgrades cost, so saves from the platformer days get that gold back.
+const OLD_UPGRADE_COSTS := {"heart": [60, 150], "sword": [40, 100, 200], "fire": [50, 120, 220]}
 
 var data := {}
 var path := SAVE_PATH
@@ -55,12 +41,18 @@ static func fresh() -> Dictionary:
 		"next_id": 1,
 		"epic_log": {},          # date -> how many Epic tasks were finished that day
 		"epic_limit": true,
-		"upgrades": {"heart": 0, "sword": 0, "fire": 0},
-		"trinkets": [],
-		"equipped": "",
+		"owned": starter_items(),
+		"gear": Data.STARTING_GEAR.duplicate(true),
+		"trinkets": [],          # task charms found; the key name is from older saves
+		"mission_level": 1,
+		"mission": {},           # the mission in progress, if any
 		"stats": {"runs": 0, "wins": 0, "tasks_done": 0},
 		"seen_intro": false,
 	}
+
+
+static func starter_items() -> Array:
+	return Data.ITEMS.keys().filter(func(id): return Data.ITEMS[id].get("cost", -1) == 0)
 
 
 func load_or_new() -> void:
@@ -85,10 +77,29 @@ func save() -> void:
 func _merge(loaded: Dictionary) -> void:
 	for k in loaded:
 		data[k] = loaded[k]
-	for k in ["gold", "next_id"]:
+	for k in ["gold", "next_id", "mission_level"]:
 		data[k] = int(data[k])
-	for k in data["upgrades"]:
-		data["upgrades"][k] = int(data["upgrades"][k])
+	# Older saves: refund the platformer upgrades and drop the single worn trinket.
+	if data.has("upgrades"):
+		for k in data["upgrades"]:
+			var costs: Array = OLD_UPGRADE_COSTS.get(k, [])
+			for i in mini(int(data["upgrades"][k]), costs.size()):
+				data["gold"] += costs[i]
+		data.erase("upgrades")
+	data.erase("equipped")
+	data["trinkets"] = data["trinkets"].filter(func(id): return Data.ITEMS.has(id))
+	for id in starter_items():
+		if not data["owned"].has(id):
+			data["owned"].append(id)
+	for kind in Data.HERO_ORDER:
+		if not (data["gear"].get(kind) is Dictionary):
+			data["gear"][kind] = Data.STARTING_GEAR[kind].duplicate()
+		for slot in Data.STARTING_GEAR[kind]:
+			var id = data["gear"][kind].get(slot, "")
+			if not (id is String) or (id != "" and not Data.ITEMS.has(id)):
+				data["gear"][kind][slot] = Data.STARTING_GEAR[kind][slot]
+	if not (data["mission"] is Dictionary):
+		data["mission"] = {}
 
 
 ## A copy-pasteable code holding the whole save, for moving it to another phone or keeping a backup.
@@ -152,11 +163,17 @@ func start_run(now: float) -> bool:
 	return true
 
 
-func end_run(run_gold: int, won: bool) -> void:
-	data["gold"] += run_gold
+## Banks the mission's gold (plus any Lucky Coin bonus). A win makes the next mission tougher.
+## Returns the gold banked.
+func end_run(run_gold: int, won: bool) -> int:
+	var banked := run_gold + run_gold * gold_bonus() / 100
+	data["gold"] += banked
 	if won:
 		data["stats"]["wins"] += 1
+		data["mission_level"] += 1
+	data["mission"] = {}
 	save()
+	return banked
 
 
 # ---------------------------------------------------------------- tasks
@@ -213,7 +230,7 @@ func can_complete(task: Dictionary) -> bool:
 
 
 ## Finishes the task and opens its chest. Returns what you got:
-## {energy, gold, trinket ("" if none)}, or {} if it can't be completed.
+## {energy, gold, charm ("" if none), name}, or {} if it can't be completed.
 func complete_task(id: int, rng: RandomNumberGenerator) -> Dictionary:
 	var task := find_task(id)
 	if task.is_empty() or not can_complete(task):
@@ -222,14 +239,14 @@ func complete_task(id: int, rng: RandomNumberGenerator) -> Dictionary:
 	tick_energy(Time.get_unix_time_from_system())
 	data["energy"] = data["energy"] + tier["energy"]
 	var gold: int = tier["gold"] + rng.randi_range(0, tier["gold"] / 4)
-	var trinket := ""
-	var missing := TRINKET_ORDER.filter(func(t): return not data["trinkets"].has(t))
-	if rng.randf() < tier["trinket_chance"]:
+	var charm := ""
+	var missing := Data.CHARM_ORDER.filter(func(t): return not data["trinkets"].has(t))
+	if rng.randf() < tier["charm_chance"]:
 		if missing.is_empty():
 			gold += tier["gold"]  # you have them all, so take it in gold
 		else:
-			trinket = missing[rng.randi() % missing.size()]
-			data["trinkets"].append(trinket)
+			charm = missing[rng.randi() % missing.size()]
+			data["trinkets"].append(charm)
 	data["gold"] += gold
 	if task["tier"] == "epic":
 		var day := Time.get_date_string_from_system()
@@ -237,65 +254,91 @@ func complete_task(id: int, rng: RandomNumberGenerator) -> Dictionary:
 	data["stats"]["tasks_done"] += 1
 	data["tasks"].erase(task)
 	save()
-	return {"energy": tier["energy"], "gold": gold, "trinket": trinket, "name": task["name"]}
+	return {"energy": tier["energy"], "gold": gold, "charm": charm, "name": task["name"]}
 
 
-# ---------------------------------------------------------------- blacksmith and vault
+# ---------------------------------------------------------------- armory and squad
 
-func upgrade_level(id: String) -> int:
-	return int(data["upgrades"].get(id, 0))
-
-
-## Cost of the next level, or -1 when maxed out.
-func upgrade_cost(id: String) -> int:
-	var costs: Array = UPGRADES[id]["cost"]
-	var lvl := upgrade_level(id)
-	return costs[lvl] if lvl < costs.size() else -1
+func owns(id: String) -> bool:
+	return data["owned"].has(id) or data["trinkets"].has(id)
 
 
-func buy_upgrade(id: String) -> bool:
-	var cost := upgrade_cost(id)
-	if cost < 0 or data["gold"] < cost:
+func buy_item(id: String) -> bool:
+	var item: Dictionary = Data.ITEMS.get(id, {})
+	if item.is_empty() or item.get("task", false) or owns(id) or data["gold"] < item["cost"]:
 		return false
-	data["gold"] -= cost
-	data["upgrades"][id] = upgrade_level(id) + 1
+	data["gold"] -= item["cost"]
+	data["owned"].append(id)
 	save()
 	return true
 
 
-func total_upgrades() -> int:
-	var n := 0
-	for id in UPGRADE_ORDER:
-		n += upgrade_level(id)
-	return n
+## Puts an item on a hero. A charm can only be worn by one hero, so it moves over.
+## id "" takes the charm off.
+func equip_item(kind: String, slot: String, id: String) -> bool:
+	if id != "":
+		var item: Dictionary = Data.ITEMS.get(id, {})
+		if item.is_empty() or item["slot"] != slot or not owns(id) or (item["hero"] != "" and item["hero"] != kind):
+			return false
+	elif slot != "charm":
+		return false
+	if slot == "charm" and id != "":
+		for other in Data.HERO_ORDER:
+			if data["gear"][other]["charm"] == id:
+				data["gear"][other]["charm"] = ""
+	data["gear"][kind][slot] = id
+	save()
+	return true
 
 
-func equip(trinket: String) -> void:
-	if trinket == "" or data["trinkets"].has(trinket):
-		data["equipped"] = trinket
-		save()
+func wearer(charm: String) -> String:
+	for kind in Data.HERO_ORDER:
+		if data["gear"][kind]["charm"] == charm:
+			return kind
+	return ""
 
 
-## Sets the hero's starting stats from upgrades and the equipped trinket.
-func apply_to_player(p: Object) -> void:
-	p.max_hearts += upgrade_level("heart")
-	p.sword_reach *= 1.0 + 0.2 * upgrade_level("sword")
-	if upgrade_level("sword") >= 3:
-		p.sword_damage = 2
-	p.fire_cooldown *= pow(0.88, upgrade_level("fire"))
-	match data["equipped"]:
-		"lucky_coin":
-			p.lucky = true
-		"feather_cloak":
-			p.jump_mult = 1.08
-			p.fall_mult = 0.82
-			p.run_mult = 0.9
-		"ember_ring":
-			p.blast_radius *= 1.25
-			p.fire_cooldown *= 1.2
-		"glass_blade":
-			p.sword_damage *= 2
-			p.max_hearts -= 1
-		"tiny_crown":
-			p.crown = true
-	p.hearts = p.max_hearts
+## A hero's numbers with their gear on.
+func hero_stats(kind: String) -> Dictionary:
+	var base: Dictionary = Data.HEROES[kind]
+	var st := {"hp": base["hp"], "move": base["move"], "armour": base["armour"], "damage": 0, "range": 0,
+		"spell": 0, "focus": 0, "focus_start": 0, "gold": 0}
+	for slot in data["gear"][kind]:
+		var id: String = data["gear"][kind][slot]
+		if id != "" and Data.ITEMS.has(id):
+			var mods: Dictionary = Data.ITEMS[id]["mods"]
+			for k in mods:
+				st[k] += mods[k]
+	st["hp"] = maxi(3, st["hp"])
+	st["move"] = maxi(1, st["move"])
+	st["armour"] = maxi(0, st["armour"])
+	return st
+
+
+## Focus the squad starts each battle with.
+func start_focus() -> int:
+	var f := Data.FOCUS_START
+	for kind in Data.HERO_ORDER:
+		f += hero_stats(kind)["focus_start"]
+	return f
+
+
+## Extra mission gold in percent, from charms.
+func gold_bonus() -> int:
+	var g := 0
+	for kind in Data.HERO_ORDER:
+		g += hero_stats(kind)["gold"]
+	return g
+
+
+## Full health for everyone, for the start of a mission.
+func full_squad_hp() -> Dictionary:
+	var hp := {}
+	for kind in Data.HERO_ORDER:
+		hp[kind] = hero_stats(kind)["hp"]
+	return hp
+
+
+## How kitted out the squad is: counts bought gear, for the Armory's look.
+func gear_bought() -> int:
+	return data["owned"].filter(func(id): return Data.ITEMS[id]["cost"] > 0).size()

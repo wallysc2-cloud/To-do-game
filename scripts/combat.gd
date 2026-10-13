@@ -64,7 +64,7 @@ func _make_unit(side: String, kind: String, cell: Vector2i) -> Dictionary:
 	var u := {
 		"id": next_id, "side": side, "kind": kind, "name": base["name"], "cell": cell,
 		"hp": base["hp"], "max_hp": base["hp"], "move": base["move"], "armour": base["armour"],
-		"moved": false, "acted": false, "rooted": 0, "color": base["color"], "mods": {},
+		"moved": false, "acted": false, "rooted": 0, "burn": 0, "chill": 0, "color": base["color"], "mods": {},
 		"damage": base.get("damage", 0), "range": base.get("range", 1),
 	}
 	next_id += 1
@@ -279,20 +279,44 @@ func use_ability(u: Dictionary, id: String, at: Vector2i) -> bool:
 		_heal(unit_at(at), ab["heal"] + u["mods"].get("spell", 0))
 	elif ab.get("around", false):
 		for e in _adjacent_units(u["cell"], "enemy"):
-			_hurt(e, ab["damage"] + bonus)
+			_strike(u, e, ab["damage"] + bonus)
 	elif ab.has("radius"):
 		for o in units.duplicate():
 			if o["hp"] > 0 and dist(o["cell"], at) <= ab["radius"]:
-				_hurt(o, ab["damage"] + bonus)
+				if o["side"] == "enemy":
+					_strike(u, o, ab["damage"] + bonus)
+				else:
+					_hurt(o, ab["damage"] + bonus)
 	else:
 		var t := unit_at(at)
-		_hurt(t, ab["damage"] + bonus)
+		_strike(u, t, ab["damage"] + bonus)
 		if t["hp"] > 0 and ab.has("push"):
 			_push(t, u["cell"], ab["push"])
 		if t["hp"] > 0 and ab.get("root", false):
 			t["rooted"] = 1
 			events.append({"type": "text", "cell": t["cell"], "text": "Pinned!"})
 	return true
+
+
+## A hero hits a monster, with whatever element their weapon carries.
+func _strike(u: Dictionary, t: Dictionary, amount: int) -> void:
+	_hurt(t, amount)
+	match u["mods"].get("element", ""):
+		"fire":
+			if t["hp"] > 0:
+				t["burn"] = 2
+				events.append({"type": "text", "cell": t["cell"], "text": "Burning!"})
+		"frost":
+			if t["hp"] > 0:
+				t["chill"] = 1
+				events.append({"type": "text", "cell": t["cell"], "text": "Chilled"})
+		"storm":
+			for o in _adjacent_units(t["cell"], "enemy"):
+				if o["id"] != t["id"]:
+					_hurt(o, 1)
+		"holy":
+			if u["hp"] < u["max_hp"]:
+				_heal(u, 1)
 
 
 func _hurt(t: Dictionary, amount: int) -> void:
@@ -327,6 +351,12 @@ func end_player_turn() -> void:
 	for u in alive("hero"):
 		u["moved"] = true
 		u["acted"] = true
+	# Burning monsters take their fire damage as their turn starts.
+	for e in alive("enemy"):
+		if e["burn"] > 0:
+			events.append({"type": "text", "cell": e["cell"], "text": "Burn"})
+			_hurt(e, e["burn"])
+			e["burn"] = 0
 
 
 func start_player_turn() -> void:
@@ -344,6 +374,9 @@ func enemy_act(e: Dictionary) -> void:
 	if e["hp"] <= 0 or alive("hero").is_empty():
 		return
 	var stats: Dictionary = Data.ENEMIES[e["kind"]]
+	# A chilled monster only gets 1 step this turn.
+	e["steps"] = 1 if e["chill"] > 0 else e["move"]
+	e["chill"] = 0
 	if e["kind"] == "boss":
 		_boss_act(e)
 		return
@@ -384,7 +417,7 @@ func _move_toward_heroes(e: Dictionary) -> void:
 	var path := _path_to_heroes(e)
 	if path.size() <= 1:
 		return
-	var steps := mini(e["move"], path.size() - 1)
+	var steps := mini(e.get("steps", e["move"]), path.size() - 1)
 	# Don't step onto a hero's own tile; the path's last cell is next to one.
 	_walk(e, path[steps])
 
@@ -415,7 +448,7 @@ func _path_to_heroes(e: Dictionary) -> Array:
 
 ## Ranged monsters look for a tile they can shoot from, preferring ones far from heroes.
 func _move_to_firing_spot(e: Dictionary) -> void:
-	var reach := reachable(e, e["move"])
+	var reach := reachable(e, e.get("steps", e["move"]))
 	var best := Vector2i(-1, -1)
 	var best_score := -999
 	var here: Vector2i = e["cell"]

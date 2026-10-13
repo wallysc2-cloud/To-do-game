@@ -38,6 +38,8 @@ func setup(game_node: Node, p: RefCounted) -> void:
 	_refresh()
 	if not profile.data["seen_intro"]:
 		open_intro()
+	elif profile.data["penalty"] == "":
+		open_penalty()
 
 
 func _layout() -> void:
@@ -196,11 +198,14 @@ func open_intro() -> void:
 	_label(box, "Add tasks at the Quest Board. Finishing one gives energy, gold and a treasure chest. Chests can hold charms you can't get any other way.", 20, Color(1, 1, 1, 0.8))
 	_label(box, "Each mission costs %d energy. Energy also comes back slowly by itself, 1 every 15 minutes, up to %d." % [int(Profile.ENERGY_PER_RUN), int(Profile.ENERGY_CAP)], 20, Color(1, 1, 1, 0.8))
 	_label(box, "On a mission you pick a route of rooms to the boss. Battles are turn by turn: tap a hero, tap a blue tile to move, then attack or use an ability. Abilities cost Focus, which the squad shares. Grab the glowing crystals for more.", 20, Color(1, 1, 1, 0.8))
-	_label(box, "Gold you find is yours to keep, even if your squad falls. Spend it at the Armory.", 20, Color(1, 1, 1, 0.8))
+	_label(box, "Winning battles levels up your heroes, and you might find gear to bring home. Spend gold at the Armory.", 20, Color(1, 1, 1, 0.8))
 	_button(box, "Let's go", func():
 		profile.data["seen_intro"] = true
 		profile.save()
-		close_panel())
+		if profile.data["penalty"] == "":
+			open_penalty()
+		else:
+			close_panel())
 
 
 func open_quest_board() -> void:
@@ -243,6 +248,13 @@ func _task_row(task: Dictionary) -> Control:
 	title.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	title.add_theme_font_size_override("font_size", 22)
 	info.add_child(title)
+	if task.get("daily", false):
+		var dl := Label.new()
+		var streak: int = Profile.streak_on(task, Profile.today())
+		dl.text = "Every day" + ("   %d-day streak" % streak if streak > 0 else "") + ("   Done today" if Profile.done_today(task) else "")
+		dl.add_theme_font_size_override("font_size", 18)
+		dl.add_theme_color_override("font_color", Color(0.6, 0.9, 1.0))
+		info.add_child(dl)
 	var steps: Array = task["steps"]
 	var left: int = profile.steps_left(task)
 	if not steps.is_empty():
@@ -258,14 +270,17 @@ func _task_row(task: Dictionary) -> Control:
 		sl.add_theme_color_override("font_color", Color(1, 1, 1, 0.6))
 		info.add_child(sl)
 	var id := int(task["id"])
-	if left > 0:
+	if left > 0 and not Profile.done_today(task):
 		_small_button(hb, "Step done", func():
 			var g: int = profile.complete_step(id)
 			if g > 0:
 				game.toast("+%d gold" % g)
 			open_quest_board())
 	var done := _small_button(hb, "Done!", func(): finish_task(id))
-	if not profile.can_complete(task):
+	if Profile.done_today(task):
+		done.disabled = true
+		done.text = "See you tomorrow"
+	elif not profile.can_complete(task):
 		done.disabled = true
 		done.text = "Epic limit"
 	var del := Button.new()
@@ -284,7 +299,7 @@ func _task_row(task: Dictionary) -> Control:
 
 
 func start_new_task() -> void:
-	draft = {"name": "", "tier": "", "steps": []}
+	draft = {"name": "", "tier": "", "steps": [], "daily": false}
 	_ask_text("What do you need to do?", func(text: String):
 		if text.strip_edges() == "":
 			open_quest_board()
@@ -315,8 +330,11 @@ func _edit_steps() -> void:
 			if text.strip_edges() != "":
 				draft["steps"].append(text.strip_edges())
 			_edit_steps()))
+	_button(box, "Repeats every day: %s" % ("Yes" if draft["daily"] else "No"), func():
+		draft["daily"] = not draft["daily"]
+		_edit_steps())
 	_button(box, "Save task", func():
-		profile.add_task(draft["name"], draft["tier"], draft["steps"])
+		profile.add_task(draft["name"], draft["tier"], draft["steps"], draft["daily"])
 		open_quest_board())
 
 
@@ -328,6 +346,10 @@ func finish_task(id: int) -> void:
 	_label(box, got["name"], 24)
 	_label(box, "+%d energy" % got["energy"], 30, Color(0.6, 0.9, 1.0))
 	_label(box, "The chest holds %d gold" % got["gold"], 30, Color(1, 0.85, 0.35))
+	if got["streak"] > 1:
+		_label(box, "%d days in a row! +%d%% gold and a better charm chance." % [got["streak"], mini(got["streak"] - 1, Data.STREAK_MAX) * Data.STREAK_GOLD], 22, Color(0.6, 0.9, 1.0))
+	elif got["streak"] == 1:
+		_label(box, "Come back tomorrow to start a streak for a bigger chest.", 20, Color(0.6, 0.9, 1.0))
 	if got["charm"] != "":
 		var item: Dictionary = Data.ITEMS[got["charm"]]
 		_label(box, "...and a charm: %s!" % item["name"], 30, Color(0.9, 0.6, 1.0))
@@ -337,7 +359,7 @@ func finish_task(id: int) -> void:
 
 func open_armory() -> void:
 	var box := _open_panel("Armory")
-	_label(box, "You have %d gold. Gear you buy is yours for good. Tap a hero to kit them out." % profile.data["gold"], 22, Color(1, 0.85, 0.35))
+	_label(box, "You have %d gold. Gear you buy is yours for good, and gear found on missions shows up here too. Tap a hero to kit them out." % profile.data["gold"], 22, Color(1, 0.85, 0.35))
 	for kind in Data.HERO_ORDER:
 		var hero: Dictionary = Data.HEROES[kind]
 		var st: Dictionary = profile.hero_stats(kind)
@@ -345,8 +367,8 @@ func open_armory() -> void:
 		var worn := []
 		for slot in ["weapon", "armour", "charm"]:
 			if gear[slot] != "":
-				worn.append(Data.ITEMS[gear[slot]]["name"])
-		var b := _button(box, "%s the %s\n%s" % [hero["name"], hero["role"], ", ".join(worn)], func(): open_hero(kind))
+				worn.append(profile.item(gear[slot]).get("name", "?"))
+		var b := _button(box, "%s the %s, level %d\n%s" % [hero["name"], hero["role"], profile.hero_level(kind), ", ".join(worn)], func(): open_hero(kind))
 		b.add_theme_font_size_override("font_size", 22)
 		b.add_theme_color_override("font_color", hero["color"])
 		b.tooltip_text = _stats_text(st)
@@ -355,6 +377,11 @@ func open_armory() -> void:
 func open_hero(kind: String) -> void:
 	var hero: Dictionary = Data.HEROES[kind]
 	var box := _open_panel("%s the %s" % [hero["name"], hero["role"]])
+	var lvl: int = profile.hero_level(kind)
+	var lvl_text := "Level %d" % lvl
+	if lvl < Data.MAX_LEVEL:
+		lvl_text += "   %d / %d XP to the next level" % [profile.data["heroes"][kind]["xp"], Profile.xp_needed(lvl)]
+	_label(box, lvl_text, 21, Color(0.6, 0.9, 1.0))
 	_label(box, _stats_text(profile.hero_stats(kind)), 21, Color(1, 1, 1, 0.85))
 	_label(box, "You have %d gold." % profile.data["gold"], 20, Color(1, 0.85, 0.35))
 	var abilities := []
@@ -372,19 +399,27 @@ func open_hero(kind: String) -> void:
 				continue
 			any = true
 			box.add_child(_item_row(kind, id))
+		for it in profile.data["loot"]:
+			if it["slot"] == slot and (it["hero"] == "" or it["hero"] == kind):
+				any = true
+				box.add_child(_item_row(kind, it["uid"]))
 		if not any:
 			_label(box, "None found yet. Finish tasks to open chests.", 19, Color(1, 1, 1, 0.5))
 	_button(box, "Back to the Armory", open_armory)
 
 
 func _item_row(kind: String, id: String) -> Control:
-	var item: Dictionary = Data.ITEMS[id]
+	var item: Dictionary = profile.item(id)
+	var found := not Data.ITEMS.has(id)
 	var row := PanelContainer.new()
 	var hb := HBoxContainer.new()
 	row.add_child(hb)
 	var l := Label.new()
 	var effect: String = item.get("text", _mods_text(item["mods"]))
 	l.text = "%s\n%s" % [item["name"], effect]
+	if found:
+		l.text = "%s  (%s)\n%s" % [item["name"], Data.RARITIES[item["rarity"]]["name"].to_lower(), effect]
+		l.add_theme_color_override("font_color", Data.RARITIES[item["rarity"]]["color"])
 	l.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	l.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	l.add_theme_font_size_override("font_size", 20)
@@ -399,7 +434,7 @@ func _item_row(kind: String, id: String) -> Control:
 		else:
 			_small_button(hb, "Equipped", func(): pass).disabled = true
 	elif profile.owns(id):
-		var who: String = profile.wearer(id) if slot == "charm" else ""
+		var who: String = profile.wearer(id) if slot == "charm" or found else ""
 		var label := "Equip" if who == "" else "Take from %s" % Data.HEROES[who]["name"]
 		_small_button(hb, label, func():
 			profile.equip_item(kind, slot, id)
@@ -411,6 +446,15 @@ func _item_row(kind: String, id: String) -> Control:
 				game.toast("%s bought!" % item["name"])
 			open_hero(kind))
 		b.disabled = profile.data["gold"] < item["cost"]
+	if found:
+		var sell := _small_button(hb, "Sell: %d" % item["value"], func(): pass)
+		sell.pressed.connect(func():
+			# Two taps, so a stray tap doesn't sell something good.
+			if sell.text == "Sure?":
+				game.toast("+%d gold" % profile.sell_loot(id))
+				open_hero(kind)
+			else:
+				sell.text = "Sure?")
 	return row
 
 
@@ -435,7 +479,10 @@ func _mods_text(mods: Dictionary) -> String:
 		"spell": "spell power", "focus": "Focus each turn", "focus_start": "starting Focus", "gold": "% gold"}
 	var parts := []
 	for k in mods:
-		parts.append("%+d %s" % [mods[k], names.get(k, k)])
+		if k == "element":
+			parts.append(Data.ELEMENTS[mods[k]]["text"])
+		else:
+			parts.append("%+d %s" % [mods[k], names.get(k, k)])
 	return ", ".join(parts)
 
 
@@ -450,6 +497,8 @@ func open_vault() -> void:
 		l.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
 	var st: Dictionary = profile.data["stats"]
 	_label(box, "Missions %d   Bone King beaten %d   Tasks done %d" % [st["runs"], st["wins"], st["tasks_done"]], 20, Color(1, 1, 1, 0.6))
+	var pen: String = profile.data["penalty"]
+	_button(box, "If your squad falls: %s" % (Data.PENALTIES[pen]["name"] if pen != "" else "not picked"), open_penalty)
 	_button(box, "Back up my save", func():
 		_show_text("Copy this code somewhere safe", profile.export_code()))
 	_button(box, "Restore a backup", func():
@@ -462,6 +511,23 @@ func open_vault() -> void:
 			else:
 				game.toast("That code didn't work")
 				open_vault()))
+
+
+## What happens when your whole squad falls on a mission. Can be made gentler later, never harsher.
+func open_penalty() -> void:
+	var box := _open_panel("If your squad falls")
+	var first: bool = profile.data["penalty"] == ""
+	_label(box, "Pick how harsh losing a mission is. Retreating is always safe. You can make this gentler later, but never harsher." if first else "You can make this gentler, but never harsher.", 20, Color(1, 1, 1, 0.75))
+	for id in Data.PENALTY_ORDER:
+		var pen: Dictionary = Data.PENALTIES[id]
+		var current: bool = profile.data["penalty"] == id
+		var b := _button(box, "%s%s: %s" % [pen["name"], "  (now)" if current else "", pen["text"]], func():
+			profile.set_penalty(id)
+			game.toast("%s it is" % pen["name"])
+			close_panel())
+		b.add_theme_font_size_override("font_size", 20)
+		b.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		b.disabled = current or not profile.can_pick_penalty(id)
 
 
 func open_gate() -> void:

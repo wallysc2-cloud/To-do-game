@@ -560,6 +560,11 @@ func _draw_unit(u: Dictionary, dd: Dictionary) -> void:
 	draw_circle(p + Vector2(r * 0.32, -r * 0.1), r * 0.14, eye)
 	if u["rooted"] > 0:
 		draw_arc(p + Vector2(0, r * 0.7), r * 0.8, 0, TAU, 20, Color(0.75, 0.55, 0.3, a), 3)
+	if u.get("burn", 0) > 0:
+		var fl := p + Vector2(-r * 0.9, -r * 0.8)
+		draw_colored_polygon(PackedVector2Array([fl + Vector2(-7, 6), fl + Vector2(0, -12), fl + Vector2(7, 6)]), Color(1, 0.55, 0.15, a))
+	if u.get("chill", 0) > 0:
+		draw_arc(p, r + 6, 0, TAU, 24, Color(0.6, 0.85, 1.0, 0.8 * a), 3)
 
 	# Health bar with the number beside it, and for heroes two dots: blue = can move, orange = can act.
 	var hp: int = maxi(0, dd["hp"])
